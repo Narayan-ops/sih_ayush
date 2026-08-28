@@ -1,0 +1,253 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint-python:
+    name: Lint Python Code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black isort mypy
+      
+      - name: Run flake8
+        run: |
+          flake8 orchestrator/ ingestion/ api-gateway/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 orchestrator/ ingestion/ api-gateway/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+      
+      - name: Run black
+        run: black --check orchestrator/ ingestion/ api-gateway/
+      
+      - name: Run isort
+        run: isort --check-only orchestrator/ ingestion/ api-gateway/
+
+  lint-typescript:
+    name: Lint TypeScript Code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        working-directory: ./client
+        run: npm ci
+      
+      - name: Run ESLint
+        working-directory: ./client
+        run: npm run lint || true
+      
+      - name: Run TypeScript check
+        working-directory: ./client
+        run: npx tsc --noEmit
+
+  test-python-unit:
+    name: Python Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r orchestrator/requirements.txt
+          pip install -r ingestion/requirements.txt
+          pip install -r api-gateway/requirements.txt
+          pip install pytest pytest-cov
+      
+      - name: Run unit tests
+        run: |
+          pytest tests/unit/ -v --cov=orchestrator --cov=ingestion --cov=api-gateway --cov-report=xml
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+
+  test-python-integration:
+    name: Python Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ipsakti_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r orchestrator/requirements.txt
+          pip install -r ingestion/requirements.txt
+          pip install -r api-gateway/requirements.txt
+          pip install pytest
+      
+      - name: Run integration tests
+        run: pytest tests/integration/ -v
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ipsakti_test
+
+  # Per ADR-006: MANDATORY CI-enforced embedding regression gate
+  embedding-regression-gate:
+    name: Embedding Regression Gate (MANDATORY)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r orchestrator/requirements.txt
+      
+      - name: Run embedding regression gate
+        run: |
+          python tests/eval/embedding_regression_gate.py \
+            "candidate_model" \
+            "tests/eval/test_queries.json"
+        env:
+          # Override flag only for emergencies (audited)
+          EMBEDDING_REGRESSION_OVERRIDE: ${{ secrets.EMBEDDING_REGRESSION_OVERRIDE }}
+      
+      - name: Fail if regression detected
+        if: failure()
+        run: |
+          echo "EMBEDDING REGRESSION DETECTED"
+          echo "Per ADR-006, this gate must pass before deployment."
+          echo "If this is an emergency, use the override flag (audited)."
+          exit 1
+
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Run dependency scan
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install safety
+        run: pip install safety
+      
+      - name: Run safety check
+        run: |
+          safety check --file orchestrator/requirements.txt || true
+          safety check --file ingestion/requirements.txt || true
+          safety check --file api-gateway/requirements.txt || true
+
+  build-docker:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [lint-python, lint-typescript, test-python-unit, embedding-regression-gate]
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Build API Gateway
+        run: |
+          docker build -f deployment/docker/api-gateway.dockerfile -t ipsakti-api-gateway:${{ github.sha }} .
+      
+      - name: Build Orchestrator
+        run: |
+          docker build -f deployment/docker/orchestrator.dockerfile -t ipsakti-orchestrator:${{ github.sha }} .
+      
+      - name: Build Ingestion
+        run: |
+          docker build -f deployment/docker/ingestion.dockerfile -t ipsakti-ingestion:${{ github.sha }} .
+      
+      - name: Build Client
+        run: |
+          docker build -f deployment/docker/client.dockerfile -t ipsakti-client:${{ github.sha }} .
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-docker, security-scan]
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging.ipsakti.ayush.gov.in
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl apply -f deployment/kubernetes/staging/
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG_STAGING }}
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-docker, security-scan]
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://ipsakti.ayush.gov.in
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl apply -f deployment/kubernetes/production/
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG_PRODUCTION }}
+      
+      - name: Run smoke tests
+        run: |
+          # Add smoke test commands here
+          echo "Running production smoke tests"
+
+  notify-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [test-python-unit, test-python-integration, embedding-regression-gate]
+    if: failure()
+    steps:
+      - name: Send notification
+        run: |
+          echo "CI Pipeline failed. Check logs for details."
+          # Add notification logic (email, Slack, etc.)

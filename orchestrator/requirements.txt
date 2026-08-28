@@ -1,0 +1,32 @@
+# Core dependencies
+langgraph==0.0.26
+langchain==0.1.0
+langchain-core==0.1.10
+langchain-openai==0.0.2
+openai==1.6.1
+anthropic==0.18.1
+
+# Async support
+httpx==0.25.2
+aiohttp==3.9.1
+
+# Data processing
+pydantic==2.5.0
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+
+# Vector database clients
+qdrant-client==1.7.0
+elasticsearch==8.11.0
+
+# Knowledge graph
+neo4j==5.14.0
+
+# Observability
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-instrumentation-langchain==0.0.2
+
+# Utilities
+tenacity==8.2.3
+tiktoken==0.5.2

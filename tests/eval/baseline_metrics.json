@@ -1,0 +1,17 @@
+{
+  "model_name": "BAAI/bge-large-en-v1.5",
+  "reranker": "BAAI/bge-reranker-large",
+  "saved_at": "2026-08-28T00:00:00Z",
+  "metrics": {
+    "citation_correctness_rate": 0.85,
+    "precision_at_5": 0.78,
+    "precision_at_10": 0.82,
+    "near_miss_rate": 0.12,
+    "mean_reciprocal_rank": 0.73
+  },
+  "metadata": {
+    "test_set_size": 100,
+    "jurisdictions": ["india", "international"],
+    "domains": ["patents", "traditional_knowledge", "geographical_indications"]
+  }
+}

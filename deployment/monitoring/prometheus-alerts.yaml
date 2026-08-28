@@ -1,0 +1,174 @@
+groups:
+  - name: ipsakti_alerts
+    interval: 30s
+    rules:
+      # Per ARCHITECTURE-ADDENDUM: Citation rejection rate alert
+      - alert: HighCitationRejectionRate
+        expr: citation_rejection_rate > 0.15
+        for: 1h
+        labels:
+          severity: critical
+          service: citation_engine
+        annotations:
+          summary: "High citation rejection rate detected"
+          description: "Citation rejection rate is {{ $value | humanizePercentage }} over the last hour (threshold: 15%)"
+
+      # Per ARCHITECTURE-ADDENDUM: Retrieval latency alert
+      - alert: HighRetrievalLatency
+        expr: histogram_quantile(0.95, rate(retrieval_latency_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: retrieval
+        annotations:
+          summary: "High retrieval latency detected"
+          description: "95th percentile retrieval latency is {{ $value }}s (threshold: 2s)"
+
+      # Per ARCHITECTURE-ADDENDUM: End-to-end latency alert
+      - alert: HighEndToEndLatency
+        expr: histogram_quantile(0.95, rate(end_to_end_latency_seconds_bucket[5m])) > 3
+        for: 5m
+        labels:
+          severity: warning
+          service: orchestrator
+        annotations:
+          summary: "High end-to-end latency detected"
+          description: "95th percentile end-to-end latency is {{ $value }}s (threshold: 3s)"
+
+      # Per ARCHITECTURE-ADDENDUM: Median confidence drop alert
+      - alert: ConfidenceDrop
+        expr: |
+          median_confidence < (
+            median_confidence offset 7d
+          ) * 0.8
+        for: 1h
+        labels:
+          severity: warning
+          service: confidence_engine
+        annotations:
+          summary: "Median confidence dropped significantly"
+          description: "Median confidence dropped by more than 20% week over week"
+
+      # Per ARCHITECTURE-ADDENDUM: Escalation trigger rate alert
+      - alert: HighEscalationRate
+        expr: |
+          rate(escalation_triggers_total[1h])
+          > (
+            rate(escalation_triggers_total[1h] offset 24h)
+          ) * 2
+        for: 30m
+        labels:
+          severity: warning
+          service: orchestrator
+        annotations:
+          summary: "Escalation trigger rate doubled"
+          description: "Escalation trigger rate is {{ $value | humanize }} per hour, twice the rolling baseline"
+
+      # Per ARCHITECTURE-ADDENDUM: Dual-store consistency failure alert
+      - alert: DualStoreConsistencyFailure
+        expr: dual_store_consistency_failures_total > 0
+        for: 0s
+        labels:
+          severity: critical
+          service: ingestion
+        annotations:
+          summary: "Dual-store consistency failure detected"
+          description: "Qdrant and Elasticsearch write consistency check failed. Per ADR-008, this requires immediate attention."
+
+      # Per ARCHITECTURE-ADDENDUM: External provider usage alert
+      - alert: HighExternalProviderUsage
+        expr: |
+          rate(external_provider_requests_total[1h])
+          / rate(total_requests_total[1h])
+          > 0.05
+        for: 1h
+        labels:
+          severity: info
+          service: llm_provider
+        annotations:
+          summary: "High external provider usage detected"
+          description: "External provider usage is {{ $value | humanizePercentage }} of total sessions (threshold: 5%)"
+
+      # Service health alerts
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.instance }} is down"
+          description: "Service {{ $labels.job }} on {{ $labels.instance }} has been down for more than 1 minute"
+
+      # High error rate alert
+      - alert: HighErrorRate
+        expr: |
+          rate(http_requests_total{status=~"5.."}[5m])
+          / rate(http_requests_total[5m])
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} on {{ $labels.job }}"
+
+      # Database connection pool exhaustion
+      - alert: DatabaseConnectionPoolExhausted
+        expr: pg_stat_activity_count / pg_settings_max_connections > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          service: postgresql
+        annotations:
+          summary: "Database connection pool nearly exhausted"
+          description: "PostgreSQL connection usage is {{ $value | humanizePercentage }}"
+
+      # Vector store health
+      - alert: QdrantCollectionError
+        expr: qdrant_collection_errors_total > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: qdrant
+        annotations:
+          summary: "Qdrant collection errors detected"
+          description: "Qdrant has reported {{ $value }} collection errors"
+
+      # Elasticsearch cluster health
+      - alert: ElasticsearchClusterUnhealthy
+        expr: elasticsearch_cluster_health_status{color="red"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: elasticsearch
+        annotations:
+          summary: "Elasticsearch cluster is unhealthy"
+          description: "Elasticsearch cluster status is red"
+
+      # Disk space alert
+      - alert: LowDiskSpace
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/"}
+            / node_filesystem_size_bytes{mountpoint="/"}
+          ) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space"
+          description: "Disk space on {{ $labels.instance }} is below 10%"
+
+      # Memory usage alert
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            node_memory_MemAvailable_bytes
+            / node_memory_MemTotal_bytes
+          ) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Available memory on {{ $labels.instance }} is below 10%"

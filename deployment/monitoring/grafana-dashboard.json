@@ -1,0 +1,88 @@
+{
+  "dashboard": {
+    "title": "IP-SAKTI Sahayak - Overview",
+    "uid": "ipsakti-overview",
+    "panels": [
+      {
+        "title": "Request Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[5m])",
+            "legendFormat": "{{job}}"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[status=~\"5..\"][5m]) / rate(http_requests_total[5m])",
+            "legendFormat": "{{job}}"
+          }
+        ]
+      },
+      {
+        "title": "End-to-End Latency (p95)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(end_to_end_latency_seconds_bucket[5m]))",
+            "legendFormat": "p95"
+          }
+        ]
+      },
+      {
+        "title": "Retrieval Latency (p95)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(retrieval_latency_seconds_bucket[5m]))",
+            "legendFormat": "p95"
+          }
+        ]
+      },
+      {
+        "title": "Citation Rejection Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "citation_rejection_rate",
+            "legendFormat": "Rejection Rate"
+          }
+        ]
+      },
+      {
+        "title": "Median Confidence",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "median_confidence",
+            "legendFormat": "Confidence"
+          }
+        ]
+      },
+      {
+        "title": "External Provider Usage",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(external_provider_requests_total[1h]) / rate(total_requests_total[1h])",
+            "legendFormat": "Usage %"
+          }
+        ]
+      },
+      {
+        "title": "Service Health",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "up",
+            "legendFormat": "{{job}}"
+          }
+        ]
+      }
+    ]
+  }
+}

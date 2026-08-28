@@ -1,0 +1,53 @@
+[
+  {
+    "query_id": "test_001",
+    "query": "What are the patentability criteria for Ayurvedic formulations in India?",
+    "jurisdiction": "india",
+    "domain": "patents",
+    "expected_section": "Section 3",
+    "expected_article": "3(p)",
+    "citation_correct": true,
+    "retrieved": [
+      {"chunk_id": "chunk_001", "relevant": true},
+      {"chunk_id": "chunk_002", "relevant": true},
+      {"chunk_id": "chunk_003", "relevant": false},
+      {"chunk_id": "chunk_004", "relevant": false},
+      {"chunk_id": "chunk_005", "relevant": false}
+    ],
+    "near_miss": false
+  },
+  {
+    "query_id": "test_002",
+    "query": "How does TKDL protect traditional knowledge?",
+    "jurisdiction": "india",
+    "domain": "traditional_knowledge",
+    "expected_section": "Section 3",
+    "expected_article": "3(p)",
+    "citation_correct": true,
+    "retrieved": [
+      {"chunk_id": "chunk_011", "relevant": true},
+      {"chunk_id": "chunk_012", "relevant": true},
+      {"chunk_id": "chunk_013", "relevant": true},
+      {"chunk_id": "chunk_014", "relevant": false},
+      {"chunk_id": "chunk_015", "relevant": false}
+    ],
+    "near_miss": false
+  },
+  {
+    "query_id": "test_003",
+    "query": "What is the process for geographical indication registration?",
+    "jurisdiction": "india",
+    "domain": "geographical_indications",
+    "expected_section": "Section 2",
+    "expected_article": "2(f)",
+    "citation_correct": true,
+    "retrieved": [
+      {"chunk_id": "chunk_021", "relevant": true},
+      {"chunk_id": "chunk_022", "relevant": false},
+      {"chunk_id": "chunk_023", "relevant": false},
+      {"chunk_id": "chunk_024", "relevant": false},
+      {"chunk_id": "chunk_025", "relevant": false}
+    ],
+    "near_miss": false
+  }
+]

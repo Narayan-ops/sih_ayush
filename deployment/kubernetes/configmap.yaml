@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-config
+  namespace: ipsakti
+data:
+  url: "http://keycloak-service:8080"
+  realm: "ipsakti"
+  client-id: "ipsakti-frontend"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: ipsakti
+data:
+  environment: "production"
+  log-level: "info"
+  jurisdiction-default: "india"
