@@ -257,6 +257,31 @@ class CrossEncoderReranker:
             if boosted_count > 0:
                 logger.info(f"Applied exact-match boost to {boosted_count} results")
         
+        # Apply definition chunk boost for "What is X" queries (but not "What are X" queries)
+        import re
+        # Only match "What is X" or "What is a X", not "What are X"
+        definition_match = re.search(r'what\s+is\s+(?:a\s+)?([a-z_]+(?:\s+[a-z_]+)?)(?:\s+under|$)', query, re.IGNORECASE)
+        if definition_match:
+            definition_term = definition_match.group(1).strip().lower()
+            # Normalize: replace spaces with underscores for clause matching
+            definition_term_normalized = definition_term.replace(' ', '_')
+            # Only boost if the term looks like a single concept (1-2 words, not a complex phrase)
+            if len(definition_term.split()) <= 2:
+                logger.info(f"Rerank hybrid: Definition query detected, boosting chunks with clause matching: {definition_term_normalized}")
+                boosted_count = 0
+                for result in reranked:
+                    result_clause = result.clause.lower() if result.clause else ''
+                    if definition_term_normalized in result_clause:
+                        # Force-boost definition chunks to ensure they're included
+                        result.rerank_score = 999.0
+                        boosted_count += 1
+                        logger.info(f"Rerank hybrid: Force-boosted definition chunk_id={result.chunk_id[:8]}..., clause={result.clause}, score=999.0")
+                
+                if boosted_count > 0:
+                    logger.info(f"Rerank hybrid: Force-boosted {boosted_count} definition chunks")
+                else:
+                    logger.info(f"Rerank hybrid: No definition chunk found for term '{definition_term_normalized}'")
+        
         # Sort by rerank score
         reranked.sort(key=lambda x: x.rerank_score, reverse=True)
         
@@ -351,6 +376,31 @@ class CrossEncoderReranker:
             
             if boosted_count > 0:
                 logger.info(f"Simple fusion: Applied exact-match boost to {boosted_count} results")
+        
+        # Apply definition chunk boost for "What is X" queries (but not "What are X" queries)
+        import re
+        # Only match "What is X" or "What is a X", not "What are X"
+        definition_match = re.search(r'what\s+is\s+(?:a\s+)?([a-z_]+(?:\s+[a-z_]+)?)(?:\s+under|$)', query, re.IGNORECASE)
+        if definition_match:
+            definition_term = definition_match.group(1).strip().lower()
+            # Normalize: replace spaces with underscores for clause matching
+            definition_term_normalized = definition_term.replace(' ', '_')
+            # Only boost if the term looks like a single concept (1-2 words, not a complex phrase)
+            if len(definition_term.split()) <= 2:
+                logger.info(f"Simple fusion: Definition query detected, boosting chunks with clause matching: {definition_term_normalized}")
+                boosted_count = 0
+                for result in fused:
+                    result_clause = result.clause.lower() if result.clause else ''
+                    if definition_term_normalized in result_clause:
+                        # Force-boost definition chunks to ensure they're included
+                        result.rerank_score = 999.0
+                        boosted_count += 1
+                        logger.info(f"Simple fusion: Force-boosted definition chunk_id={result.chunk_id[:8]}..., clause={result.clause}, score=999.0")
+                
+                if boosted_count > 0:
+                    logger.info(f"Simple fusion: Force-boosted {boosted_count} definition chunks")
+                else:
+                    logger.info(f"Simple fusion: No definition chunk found for term '{definition_term_normalized}'")
         
         fused.sort(key=lambda x: x.rerank_score, reverse=True)
         return fused[:top_k]

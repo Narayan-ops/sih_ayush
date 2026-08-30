@@ -142,6 +142,16 @@ async def ingest(request: IngestionRequest):
         
         logger.info(f"Generated embeddings for {len(embedded_chunks)} chunks")
         
+        # Debug: Check first chunk structure
+        if embedded_chunks:
+            first_chunk = embedded_chunks[0]
+            logger.info(f"First chunk keys: {first_chunk.keys()}")
+            logger.info(f"First chunk has 'embedding': {'embedding' in first_chunk}")
+            if 'embedding' in first_chunk:
+                logger.info(f"First chunk embedding length: {len(first_chunk['embedding'])}")
+            else:
+                logger.error(f"First chunk missing 'embedding' key!")
+        
         # Step 4: Transactional write to Qdrant and Elasticsearch
         corpus_version = request.metadata.get("version", "1.0")
         

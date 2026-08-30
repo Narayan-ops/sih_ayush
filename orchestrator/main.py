@@ -141,7 +141,7 @@ async def query(request: QueryRequest):
             DOMAIN_HINTS = {
                 # GI domain
                 "gi": ["geographical indication", "gi", "geographical", "regional identity", "regional product", "origin product"],
-                # Copyright domain  
+                # Copyright domain
                 "copyright": ["copyright", "copyright act", "literary work", "artistic work", "musical work", "cinematograph"],
                 # Trademarks domain
                 "trademarks": ["trademark", "trade mark", "brand", "brand name", "logo", "service mark", "certification mark"],
@@ -157,6 +157,15 @@ async def query(request: QueryRequest):
                 "drugs_cosmetics": ["drug", "cosmetic", "ayurvedic medicine", "siddha medicine", "unani medicine", "formulation", "medicine", "pharmaceutical"],
                 # FSSAI domain
                 "fssai": ["fssai", "food safety", "ayurveda aahar", "nutraceutical", "food regulation", "food standard"],
+                # International domains
+                "trips": ["trips", "trips agreement", "wto trips", "trade-related intellectual property rights"],
+                "pct": ["pct", "patent cooperation treaty", "international patent application"],
+                "budapest": ["budapest", "budapest treaty", "microorganism", "biological material deposit"],
+                "madrid": ["madrid", "madrid system", "international trademark registration"],
+                "hague": ["hague", "hague system", "industrial design registration"],
+                "cbd_nagoya": ["cbd", "nagoya", "nagoya protocol", "genetic resources", "access benefit sharing"],
+                "wipo_gratk": ["gratk", "traditional knowledge", "genetic resources", "traditional knowledge expressions"],
+                "herbal_market_access": ["herbal", "traditional herbal", "herbal medicine", "eu herbal directive"],
             }
             
             # Detect domain hints from query
@@ -176,18 +185,42 @@ async def query(request: QueryRequest):
             else:
                 logger.info(f"Boosted domains: {list(boosted_domains)}")
             
+            # Extract the term being defined for "What is X" queries (do this early for use in retrieval)
+            definition_term = None
+            definition_term_normalized = None
+            import re
+            # Only match "What is X" or "What is a X", not "What are X"
+            definition_match = re.search(r'what\s+is\s+(?:a\s+)?([a-z_]+(?:\s+[a-z_]+)?)(?:\s+under|$)', request.query, re.IGNORECASE)
+            if definition_match:
+                definition_term = definition_match.group(1).strip().lower()
+                # Normalize: replace spaces with underscores for clause matching
+                definition_term_normalized = definition_term.replace(' ', '_')
+                # Only proceed if the term looks like a single concept (1-2 words)
+                if len(definition_term.split()) <= 2:
+                    logger.info(f"Definition query detected, looking for clause matching term: '{definition_term}' (normalized: '{definition_term_normalized}')")
+                else:
+                    # Reset if it's a complex phrase (like "patentability criteria")
+                    definition_term = None
+                    definition_term_normalized = None
+            
             # Retrieve from all available domains with domain-aware boost
             all_retrieval_results = []
             for domain in available_domains:
                 logger.info(f"Retrieving from domain: {domain}")
-                domain_results = hybrid_retriever.retrieve(
-                    query=request.query,
-                    query_embedding=query_embedding,
-                    jurisdiction=jurisdiction,
-                    domain=domain,
-                    top_k=10,
-                    enable_rerank=False  # Disabled cross-encoder reranking, using dense/sparse fusion instead
-                )
+                try:
+                    domain_results = hybrid_retriever.retrieve(
+                        query=request.query,
+                        query_embedding=query_embedding,
+                        jurisdiction=jurisdiction,
+                        domain=domain,
+                        top_k=10,
+                        enable_rerank=False  # Disabled cross-encoder reranking, using dense/sparse fusion instead
+                    )
+                    logger.info(f"Successfully retrieved {len(domain_results)} results from domain {domain}")
+                except Exception as e:
+                    logger.error(f"Exception while retrieving from domain {domain}: {e}")
+                    logger.error(f"Exception type: {type(e).__name__}")
+                    domain_results = []
                 
                 # Apply domain-hint boost (3x) to results from boosted domains
                 if domain in boosted_domains:
@@ -261,6 +294,8 @@ async def query(request: QueryRequest):
                 
                 logger.info(f"Total results after direct lookup: {len(all_retrieval_results)}")
             
+
+            
             # Sort all results by rerank_score (if available) or score
             def get_sort_key(result):
                 if hasattr(result, 'rerank_score'):
@@ -279,23 +314,31 @@ async def query(request: QueryRequest):
                     domain_results_map[domain] = []
                 domain_results_map[domain].append(result)
             
+            # Dedupe each domain's results by chunk_id AND content before selecting top-N
+            for domain in domain_results_map:
+                seen_chunk_ids = set()
+                seen_content = set()
+                deduped_results = []
+                for result in domain_results_map[domain]:
+                    chunk_id = result.chunk_id if hasattr(result, 'chunk_id') else result.get('chunk_id', '')
+                    content = result.content if hasattr(result, 'content') else result.get('content', '')
+                    content_normalized = content.strip()[:100]  # Use first 100 chars for comparison
+                    if chunk_id not in seen_chunk_ids and content_normalized not in seen_content:
+                        seen_chunk_ids.add(chunk_id)
+                        seen_content.add(content_normalized)
+                        deduped_results.append(result)
+                original_count = len(domain_results_map[domain])
+                domain_results_map[domain] = deduped_results
+                logger.info(f"Domain {domain}: deduped from {original_count} to {len(deduped_results)} unique chunks")
+            
             # Sort each domain's results by score
             for domain in domain_results_map:
                 domain_results_map[domain].sort(key=get_sort_key, reverse=True)
             
             final_candidates = []
             min_score_floor = 0.5  # Minimum relevance floor
-            
-            # Extract the term being defined for "What is X" queries
-            definition_term = None
-            definition_term_normalized = None
-            import re
-            definition_match = re.search(r'what\s+is\s+(?:a\s+)?(.+?)(?:\s+under|$)', request.query, re.IGNORECASE)
-            if definition_match:
-                definition_term = definition_match.group(1).strip().lower()
-                # Normalize: replace spaces with underscores for clause matching
-                definition_term_normalized = definition_term.replace(' ', '_')
-                logger.info(f"Definition query detected, looking for clause matching term: '{definition_term}' (normalized: '{definition_term_normalized}')")
+                
+
             
             # RESERVE 3 slots for boosted domain (if it has results)
             if boosted_domains:
@@ -303,20 +346,26 @@ async def query(request: QueryRequest):
                     if domain in domain_results_map:
                         domain_results = domain_results_map[domain]
                         
-                        # For definition queries, force-include matching clause if found
-                        if definition_term:
-                            for result in domain_results:
-                                clause = result.clause if hasattr(result, 'clause') else result.get('clause', '')
+                        # Force-include for definition queries: look for chunk with matching clause
+                        # Search through all results, not just top ones
+                        # Only apply if we have a valid single-concept definition term
+                        if definition_term and definition_term_normalized and len(definition_term.split()) <= 2 and domain_results:
+                            definition_match = None
+                            for r in domain_results:
+                                clause = r.clause if hasattr(r, 'clause') else r.get('clause', '')
                                 clause_lower = clause.lower()
-                                # Match both space-separated and underscore-separated versions
-                                if (definition_term in clause_lower or 
-                                    definition_term_normalized in clause_lower) and get_sort_key(result) >= min_score_floor:
-                                    if result not in final_candidates:
-                                        final_candidates.append(result)
-                                        logger.info(f"Boosted domain {domain}: FORCE-INCLUDED definition clause={clause}, score={get_sort_key(result):.4f}")
-                                else:
-                                    # Debug: log why it didn't match
-                                    logger.debug(f"Clause match check: clause='{clause_lower}', term='{definition_term}', norm='{definition_term_normalized}', match=False")
+                                logger.info(f"Checking clause: '{clause}' (lower: '{clause_lower}') against term: '{definition_term_normalized}'")
+                                # Check if clause contains the normalized definition term
+                                if definition_term_normalized in clause_lower:
+                                    definition_match = r
+                                    logger.info(f"Boosted domain {domain}: FOUND definition chunk with clause={clause} matching term '{definition_term_normalized}'")
+                                    break
+                            
+                            if definition_match and definition_match not in final_candidates:
+                                final_candidates.append(definition_match)
+                                logger.info(f"Boosted domain {domain}: FORCE-INCLUDED definition chunk, clause={definition_match.clause if hasattr(definition_match, 'clause') else definition_match.get('clause', '')}, score={get_sort_key(definition_match):.4f}")
+                            else:
+                                logger.info(f"Boosted domain {domain}: No definition chunk found for term '{definition_term_normalized}'")
                         
                         # Take top 3 from boosted domain (reserved slots), excluding already-added
                         boosted_top = []
@@ -327,7 +376,7 @@ async def query(request: QueryRequest):
                                     break
                         
                         final_candidates.extend(boosted_top)
-                        logger.info(f"Boosted domain {domain}: RESERVED {len(boosted_top)} additional slots (top from above floor {min_score_floor})")
+                        logger.info(f"Boosted domain {domain}: RESERVED {len(boosted_top)} slots (top from above floor {min_score_floor})")
             
             # Take top-1 from each non-boosted domain to fill remaining slots
             for domain, results in domain_results_map.items():

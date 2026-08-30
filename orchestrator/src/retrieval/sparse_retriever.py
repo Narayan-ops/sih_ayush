@@ -157,13 +157,28 @@ class SparseRetriever:
                 ]
             }
             
-            # Add exact phrase matches with high boost
+            # Add exact phrase matches with high boost in content field
             for phrase in set(phrases):  # Deduplicate phrases
                 bool_query["should"].append({
                     "match_phrase": {
                         "content": {
                             "query": phrase,
                             "boost": 5.0  # High boost for exact phrase matches
+                        }
+                    }
+                })
+            
+            # Add clause-based boost for definition queries
+            # If query contains multi-word terms like "geographical indication", boost chunks with matching clause identifiers
+            for phrase in set(phrases):
+                # Normalize phrase for clause matching (replace spaces with underscores)
+                clause_normalized = phrase.replace(' ', '_')
+                # Use wildcard match to find clauses containing the normalized term
+                bool_query["should"].append({
+                    "wildcard": {
+                        "clause": {
+                            "value": f"*{clause_normalized}*",
+                            "boost": 10.0  # Higher boost for clause identifier matches
                         }
                     }
                 })

@@ -48,6 +48,16 @@ DOMAIN_LOOKUP = {
     # Trademarks
     "trade_marks_act_1999": "trademarks",
     
+    # International/Export Markets
+    "eu_traditional_herbal_medicinal_products_directive": "herbal_market_access",
+    "budapest_treaty_procedural_overview": "budapest",
+    "cbd_nagoya_protocol_abs_articles": "cbd_nagoya",
+    "hague_system_procedural_overview": "hague",
+    "madrid_system_procedural_overview": "madrid",
+    "pct_procedural_overview": "pct",
+    "trips_agreement_patentability_articles": "trips",
+    "wipo_gratk_treaty_2024": "wipo_gratk",
+    
     # Designs
     "designs_act_2000": "designs",
     
@@ -59,16 +69,6 @@ DOMAIN_LOOKUP = {
     
     # FSSAI
     "fssai_ayurveda_aahara_regulations_2022": "fssai",
-    
-    # International Treaties
-    "trips_agreement_patentability_articles": "trips",
-    "cbd_nagoya_protocol_abs_articles": "cbd_nagoya",
-    "wipo_gratk_treaty_2024": "wipo_gratk",
-    "pct_procedural_overview": "pct",
-    "madrid_system_procedural_overview": "madrid",
-    "hague_system_procedural_overview": "hague",
-    "budapest_treaty_procedural_overview": "budapest",
-    "eu_traditional_herbal_medicinal_products_directive": "herbal_market_access",
 }
 
 # Jurisdiction normalization mapping
@@ -76,6 +76,7 @@ JURISDICTION_NORMALIZATION = {
     "in": "in",  # Use collection prefix directly
     "un": "intl",  # Use collection prefix directly
     "wto": "intl",  # Use collection prefix directly
+    "eu": "intl",  # EU content maps to international
 }
 
 INGESTION_URL = "http://localhost:8002/ingest"

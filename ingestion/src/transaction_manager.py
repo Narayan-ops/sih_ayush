@@ -198,9 +198,18 @@ class TransactionManager:
             # Prepare Qdrant points
             qdrant_points = []
             for chunk in chunks:
+                embedding = chunk.get("embedding", [])
+                if not embedding or len(embedding) == 0:
+                    logger.error(f"Chunk missing embedding: chunk_id={chunk.get('metadata', {}).get('chunk_id', 'unknown')}")
+                    logger.error(f"Chunk keys: {chunk.keys()}")
+                    logger.error(f"Chunk structure: {chunk}")
+                    raise ValueError(f"Chunk has no embedding data: {chunk.get('metadata', {}).get('chunk_id', 'unknown')}")
+                
+                logger.info(f"Preparing point with embedding length: {len(embedding)}")
+                
                 point = PointStruct(
                     id=chunk["metadata"].get("chunk_id", ""),
-                    vector=chunk.get("embedding", []),
+                    vector=embedding,
                     payload={
                         "content": chunk["content"],
                         "section": chunk.get("section", ""),
@@ -268,7 +277,7 @@ class TransactionManager:
             if collection_name not in collection_names:
                 self.qdrant_client.create_collection(
                     collection_name=collection_name,
-                    vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
+                    vectors_config=VectorParams(size=1024, distance=Distance.COSINE, on_disk=False)
                 )
                 logger.info(f"Created Qdrant collection: {collection_name}")
         except Exception as e:
