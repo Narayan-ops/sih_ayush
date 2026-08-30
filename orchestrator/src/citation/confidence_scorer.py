@@ -32,8 +32,8 @@ class ConfidenceScorer:
 
     def __init__(
         self,
-        min_retrieval_confidence: float = 0.6,
-        min_citation_confidence: float = 0.7,
+        min_retrieval_confidence: float = 0.4,  # Lowered from 0.6 for dense/sparse fusion scores
+        min_citation_confidence: float = 0.5,  # Lowered from 0.7 for word overlap similarity
         min_overall_confidence: float = 0.65
     ):
         """
@@ -129,13 +129,37 @@ class ConfidenceScorer:
             return 0.0
         
         # Average of top chunk scores
-        scores = [c.score for c in retrieved_chunks[:5]]  # Top 5
+        scores = []
+        for c in retrieved_chunks[:5]:  # Top 5
+            if hasattr(c, 'rerank_score'):
+                scores.append(c.rerank_score)
+            elif hasattr(c, 'score'):
+                scores.append(c.score)
+            elif isinstance(c, dict):
+                scores.append(c.get('score', c.get('rerank_score', 0.0)))
+            else:
+                scores.append(0.0)
+        
+        logger.info(f"Retrieval scoring: chunk count={len(retrieved_chunks)}, scores={[f'{s:.4f}' for s in scores]}")
+        logger.info(f"Score sources: {[type(c).__name__ for c in retrieved_chunks[:5]]}")
+        for i, c in enumerate(retrieved_chunks[:5]):
+            if hasattr(c, 'rerank_score'):
+                logger.info(f"  Chunk {i}: has .rerank_score = {c.rerank_score:.4f}")
+            elif hasattr(c, 'score'):
+                logger.info(f"  Chunk {i}: has .score = {c.score:.4f}")
+            elif isinstance(c, dict):
+                logger.info(f"  Chunk {i}: dict with keys={list(c.keys())}, score={c.get('score', c.get('rerank_score', 'MISSING'))}")
+            else:
+                logger.info(f"  Chunk {i}: unknown type, score=0.0")
+        
         avg_score = sum(scores) / len(scores)
         
         # Boost if we have enough high-quality chunks
         high_quality_count = sum(1 for s in scores if s >= 0.8)
         if high_quality_count >= 2:
             avg_score = min(avg_score * 1.1, 1.0)
+        
+        logger.info(f"Retrieval score: avg={avg_score:.4f}, high_quality_count={high_quality_count}")
         
         return avg_score
 
@@ -177,6 +201,9 @@ class ConfidenceScorer:
         # Combine coverage and confidence
         citation_score = (coverage * 0.6) + (avg_citation_confidence * 0.4)
         
+        logger.info(f"Citation scoring: supported={supported_count}/{len(citation_mappings)}, coverage={coverage:.4f}, "
+                   f"avg_citation_conf={avg_citation_confidence:.4f}, final_score={citation_score:.4f}")
+        
         return citation_score
 
     def _calculate_overall(self, retrieval_score: float, citation_score: float) -> float:
@@ -192,6 +219,8 @@ class ConfidenceScorer:
         """
         # Weight retrieval slightly higher as it's the foundation
         overall = (retrieval_score * 0.6) + (citation_score * 0.4)
+        
+        logger.info(f"Overall calculation: retrieval={retrieval_score:.4f} * 0.6 + citation={citation_score:.4f} * 0.4 = {overall:.4f}")
         
         return overall
 

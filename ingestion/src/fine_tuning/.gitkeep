@@ -1,0 +1,12 @@
+# Fine-tuning directory for Ingestion pipeline
+# 
+# This directory is intentionally empty for Phase 1 MVP.
+# 
+# Phase 1.5 Implementation (Post-MVP):
+# - Contrastive fine-tuning based on question/cited-section pairs
+# - Fine-tune BGE/E5-large embeddings on IP-specific data
+# - Improve retrieval precision for legal terminology
+# - Update baseline metrics in tests/eval/baseline_metrics.json
+# - Re-run embedding regression gate after fine-tuning
+#
+# Per ARCHITECTURE-ADDENDUM: Fine-tuning to improve domain-specific retrieval

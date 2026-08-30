@@ -20,7 +20,8 @@ class StatuteParser:
         # Patterns for detecting sections and articles
         self.section_pattern = re.compile(r'\bSection\s+\d+[A-Z]?\b', re.IGNORECASE)
         self.article_pattern = re.compile(r'\bArticle\s+\d+[A-Z]?\b', re.IGNORECASE)
-        self.clause_pattern = re.compile(r'\b\(\d+\)\b')
+        # Pattern for both numeric (1), (2) and lettered (a), (b) clauses
+        self.clause_pattern = re.compile(r'\b\([a-z0-9]+\)\b', re.IGNORECASE)
     
     def parse(self, raw_text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -59,6 +60,31 @@ class StatuteParser:
                 chunks.append(chunk)
         
         logger.info(f"Parsed {len(chunks)} chunks from statute")
+        return chunks
+    
+    def parse_json(self, structured_data: List[Dict[str, Any]], metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Parse already structured JSON data into chunks
+        Use this when data is already correctly chunked, sourced, with clause IDs
+        """
+        chunks = []
+        
+        for i, item in enumerate(structured_data):
+            chunk = {
+                "content": item.get("content", item.get("text", "")),
+                "section": item.get("section", "unknown"),
+                "clause": item.get("clause", item.get("clause_id")),
+                "source_id": item.get("source_id", f"source_{i}"),
+                "metadata": {
+                    **metadata,
+                    "chunk_type": "structured",
+                    "chunk_index": i,
+                    **item.get("metadata", {})
+                }
+            }
+            chunks.append(chunk)
+        
+        logger.info(f"Parsed {len(chunks)} chunks from structured JSON")
         return chunks
     
     def _split_by_clauses(self, text: str) -> List[str]:

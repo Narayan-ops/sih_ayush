@@ -35,7 +35,7 @@ class CitationEngine:
             confidence_scorer: Confidence scorer instance
         """
         self.claim_extractor = claim_extractor or ClaimExtractor()
-        self.citation_mapper = citation_mapper or CitationMapper()
+        self.citation_mapper = citation_mapper or CitationMapper(similarity_threshold=0.3)
         self.confidence_scorer = confidence_scorer or ConfidenceScorer()
         
         logger.info("CitationEngine initialized")
@@ -134,25 +134,27 @@ class CitationEngine:
             )
         
         citation_mappings = processed_result['citation_mappings']
+        claims = processed_result['claims']
         annotated_text = generated_text
         
         # Add citations after each claim
         offset = 0
         for mapping in citation_mappings:
             if mapping.is_supported and mapping.citations:
-                claim_start = mapping.claim_id.replace('claim_', '')
-                
-                # Format citation
-                citation_text = self.citation_mapper.format_citations(mapping)
-                
-                # Insert citation after claim
-                insert_pos = mapping.claims[0].end_pos + offset if mapping.claims else 0
-                annotated_text = (
-                    annotated_text[:insert_pos] + 
-                    f" {citation_text}" + 
-                    annotated_text[insert_pos:]
-                )
-                offset += len(f" {citation_text}")
+                # Find the corresponding claim
+                claim = next((c for c in claims if c.claim_id == mapping.claim_id), None)
+                if claim:
+                    # Format citation
+                    citation_text = self.citation_mapper.format_citations(mapping)
+                    
+                    # Insert citation after claim
+                    insert_pos = claim.end_pos + offset
+                    annotated_text = (
+                        annotated_text[:insert_pos] + 
+                        f" {citation_text}" + 
+                        annotated_text[insert_pos:]
+                    )
+                    offset += len(f" {citation_text}")
         
         return annotated_text
 

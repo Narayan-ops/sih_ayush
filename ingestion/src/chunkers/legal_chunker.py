@@ -7,6 +7,7 @@ Per architecture: Not fixed-window chunking, preserves citation granularity
 from typing import List, Dict, Any
 import re
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -34,20 +35,24 @@ class LegalChunker:
         for section in parsed_sections:
             content = section["content"]
             section_num = section.get("section", "unknown")
+            clause_id = section.get("clause_id", None)  # Preserve clause_id from parser
             
             # Check if section needs further chunking
             if len(content) > self.max_chunk_size:
                 # Split by subsections or paragraphs
-                sub_chunks = self._split_large_section(content, section_num)
+                sub_chunks = self._split_large_section(content, section_num, clause_id)
                 chunks.extend(sub_chunks)
             else:
-                # Keep as is
-                chunks.append(section)
+                # Keep as is, preserve clause_id
+                section_with_clause = section.copy()
+                if clause_id:
+                    section_with_clause["clause"] = clause_id
+                chunks.append(section_with_clause)
         
         logger.info(f"Created {len(chunks)} chunks from {len(parsed_sections)} sections")
         return chunks
     
-    def _split_large_section(self, content: str, section_num: str) -> List[Dict[str, Any]]:
+    def _split_large_section(self, content: str, section_num: str, clause: str = None) -> List[Dict[str, Any]]:
         """
         Split a large section while preserving legal structure
         """
@@ -72,23 +77,24 @@ class LegalChunker:
                 
                 if len(full_text) > self.max_chunk_size:
                     # Further split by paragraphs
-                    para_chunks = self._split_by_paragraphs(full_text, section_num)
+                    para_chunks = self._split_by_paragraphs(full_text, section_num, clause=clause)
                     chunks.extend(para_chunks)
                 else:
                     chunks.append({
                         "content": full_text.strip(),
                         "section": section_num,
+                        "clause": clause if clause else None,
                         "subsection": f"subsection_{i}" if i > 0 else None,
                         "chunk_type": "subsection"
                     })
         else:
             # Split by paragraphs
-            para_chunks = self._split_by_paragraphs(content, section_num)
+            para_chunks = self._split_by_paragraphs(content, section_num, clause=clause)
             chunks.extend(para_chunks)
         
         return chunks
     
-    def _split_by_paragraphs(self, text: str, section_num: str) -> List[Dict[str, Any]]:
+    def _split_by_paragraphs(self, text: str, section_num: str, clause: str = None) -> List[Dict[str, Any]]:
         """
         Split text by paragraphs while respecting sentence boundaries
         """
@@ -108,6 +114,7 @@ class LegalChunker:
                 chunks.append({
                     "content": current_chunk.strip(),
                     "section": section_num,
+                    "clause": clause,
                     "chunk_index": chunk_index,
                     "chunk_type": "paragraph"
                 })
@@ -121,6 +128,7 @@ class LegalChunker:
             chunks.append({
                 "content": current_chunk.strip(),
                 "section": section_num,
+                "clause": clause,
                 "chunk_index": chunk_index,
                 "chunk_type": "paragraph"
             })
@@ -140,7 +148,7 @@ class LegalChunker:
                 "metadata": {
                     **chunk.get("metadata", {}),
                     **metadata,
-                    "chunk_id": f"{metadata.get('source_id', 'unknown')}_{i}",
+                    "chunk_id": str(uuid.uuid4()),
                     "version_hash": metadata.get("version_hash", "1.0"),
                     "jurisdiction": metadata.get("jurisdiction", "india"),
                     "domain": metadata.get("domain", "statutes")

@@ -22,6 +22,7 @@ class Citation:
     version_hash: str
     confidence: float
     span_match: Optional[str] = None  # Exact text span that supports the claim
+    clause: Optional[str] = None  # Clause identifier if available
 
 
 @dataclass
@@ -121,22 +122,37 @@ class CitationMapper:
         citations = []
         
         for chunk in retrieved_chunks:
+            # Handle both dict and object chunks
+            chunk_content = chunk.content if hasattr(chunk, 'content') else chunk.get('content', '') if isinstance(chunk, dict) else chunk.get('text', '')
+            chunk_id = chunk.chunk_id if hasattr(chunk, 'chunk_id') else chunk.get('chunk_id', '')
+            source_id = chunk.source_id if hasattr(chunk, 'source_id') else chunk.get('source_id', '')
+            section = chunk.section if hasattr(chunk, 'section') else chunk.get('section', '')
+            article = chunk.article if hasattr(chunk, 'article') else chunk.get('article', '')
+            version_hash = chunk.version_hash if hasattr(chunk, 'version_hash') else chunk.get('version_hash', '')
+            metadata = chunk.metadata if hasattr(chunk, 'metadata') else chunk.get('metadata', {})
+            clause = chunk.clause if hasattr(chunk, 'clause') else chunk.get('clause', '') if isinstance(chunk, dict) else metadata.get('clause', '')
+            
             # Calculate similarity between claim and chunk
-            similarity = self._calculate_similarity(claim.text, chunk.text)
+            similarity = self._calculate_similarity(claim.text, chunk_content)
+            
+            logger.info(f"CitationMapper: claim_id={claim.claim_id}, chunk_id={chunk_id[:8] if chunk_id else 'N/A'}..., similarity={similarity:.4f}, method=Jaccard_word_overlap, threshold={self.similarity_threshold}")
+            logger.info(f"  Claim text: '{claim.text[:100]}...'")
+            logger.info(f"  Chunk text: '{chunk_content[:100]}...'")
             
             if similarity >= self.similarity_threshold:
                 # Find exact span match if possible
-                span_match = self._find_span_match(claim.text, chunk.text)
+                span_match = self._find_span_match(claim.text, chunk_content)
                 
                 citation = Citation(
                     claim_id=claim.claim_id,
-                    chunk_id=chunk.chunk_id,
-                    source_id=chunk.source_id,
-                    section=chunk.section,
-                    article=chunk.article,
-                    version_hash=chunk.version_hash,
+                    chunk_id=chunk_id,
+                    source_id=source_id,
+                    section=section,
+                    article=article,
+                    version_hash=version_hash,
                     confidence=similarity,
-                    span_match=span_match
+                    span_match=span_match,
+                    clause=clause
                 )
                 
                 citations.append(citation)
@@ -272,7 +288,10 @@ class CitationMapper:
         # Format the best citation
         best = mapping.citations[0]
         
-        citation_text = f"[{best.source_id}, {best.section}, {best.article}]"
+        # Use clause if available, otherwise use article
+        section_info = best.clause if best.clause else best.article
+        source_part = f"{best.source_id}, " if best.source_id else ""
+        citation_text = f"[{source_part}Section {best.section}, Clause {section_info}]"
         
         if best.span_match:
             citation_text += f" - \"{best.span_match[:100]}...\""

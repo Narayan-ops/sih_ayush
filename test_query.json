@@ -1,0 +1,24 @@
+{
+  "query": {
+    "bool": {
+      "should": [
+        {
+          "multi_match": {
+            "query": "What is a Geographical Indication under the GI Act 1999?",
+            "fields": ["content", "clause^3", "section^2"],
+            "type": "best_fields"
+          }
+        },
+        {
+          "match_phrase": {
+            "content": {
+              "query": "geographical indication, in relation to goods, means",
+              "boost": 5.0
+            }
+          }
+        }
+      ]
+    }
+  },
+  "size": 10
+}

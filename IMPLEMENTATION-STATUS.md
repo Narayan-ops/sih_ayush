@@ -16,6 +16,27 @@ All code components for the IP-SAKTI Sahayak MVP have been implemented. The cont
 
 ## What Has Been Implemented (Code Level)
 
+### ✅ Client Services & Utilities
+- API service (`client/src/services/api.ts`)
+- Formatters utility (`client/src/utils/formatters.ts`)
+- About page (`client/src/pages/About.tsx`)
+
+### ✅ API Gateway Services
+- Orchestrator client (`api-gateway/src/services/orchestrator_client.py`)
+- Database repository (`api-gateway/src/services/database_repository.py`)
+
+### ✅ Configuration Files
+- API Gateway settings (`api-gateway/config/settings.py`)
+- Orchestrator settings (`orchestrator/config/settings.py`)
+- Ingestion settings (`ingestion/config/settings.py`)
+
+### ✅ Orchestrator Utilities
+- Helper functions (`orchestrator/src/utils/helpers.py`)
+
+### ✅ Integration Tests
+- API Gateway tests (`tests/integration/test_api_gateway.py`)
+- Retrieval & Citation tests (`tests/integration/test_retrieval_citation.py`)
+
 ### ✅ Core Backend Modules
 
 | Component | Status | File Location |

@@ -5,6 +5,7 @@ Main retrieval orchestration per ARCHITECTURE.md
 
 import logging
 from typing import List, Optional, Dict
+from .dense_retriever import DenseRetriever
 from .sparse_retriever import SparseRetriever, SparseResult
 from .reranker import CrossEncoderReranker, RerankedResult
 
@@ -118,7 +119,8 @@ class HybridRetriever:
                 sparse_results,
                 dense_weight,
                 sparse_weight,
-                top_k
+                top_k,
+                query
             )
         
         logger.info(f"Final results after fusion: {len(final_results)}")
@@ -232,7 +234,8 @@ class HybridRetriever:
                 sparse_results,
                 0.6,
                 0.4,
-                top_k
+                top_k,
+                query
             )
         
         return final_results

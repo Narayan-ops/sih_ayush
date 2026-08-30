@@ -26,6 +26,7 @@ class ClassificationState(BaseModel):
     collected_slots: Dict[str, Any]
     is_complete: bool = False
     formulation_class: Optional[FormulationClass] = None
+    escalation_reason: Optional[str] = None
 
 class DecisionTreeClassifier:
     """

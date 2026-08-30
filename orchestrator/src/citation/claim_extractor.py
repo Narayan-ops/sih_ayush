@@ -72,6 +72,8 @@ class ClaimExtractor:
             current_pos = end_pos
         
         logger.info(f"Extracted {len(claims)} claims from text")
+        for i, claim in enumerate(claims):
+            logger.info(f"  Claim {i}: claim_id={claim.claim_id}, text='{claim.text[:100]}...', requires_citation={claim.requires_citation}")
         return claims
 
     def _split_sentences(self, text: str) -> List[str]:
@@ -121,6 +123,7 @@ class ClaimExtractor:
             'i am an ai assistant',
             'here is information',
             'based on the documents',
+            'based on the context',
             'according to',
             'note that',
             'important to note',

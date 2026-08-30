@@ -60,7 +60,7 @@ class InputGuard:
     
     def __init__(self):
         self.injection_regex = re.compile(
-            "|".join(INJECTION_PATTERNS), 
+            "|".join(self.INJECTION_PATTERNS),
             re.IGNORECASE
         )
     

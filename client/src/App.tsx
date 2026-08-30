@@ -5,7 +5,6 @@ import { JurisdictionToggle, ChatInterface, ProviderConsent } from './components
 function App() {
   const [jurisdiction, setJurisdiction] = useState<'india' | 'international' | 'comparative'>('india')
   const [provider, setProvider] = useState<string>('self_hosted')
-  const [hasProviderConsent, setHasProviderConsent] = useState(false)
 
   const handleSendMessage = async (message: string, selectedJurisdiction: string) => {
     // Placeholder - in production, this would call the API
@@ -28,7 +27,6 @@ function App() {
   }
 
   const handleProviderConsent = (consented: boolean, selectedProvider: string) => {
-    setHasProviderConsented(consented)
     if (consented) {
       setProvider(selectedProvider)
     } else {

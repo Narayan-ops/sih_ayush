@@ -18,18 +18,20 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+@dataclass
 class SparseResult:
     """Represents a sparse retrieval result"""
     chunk_id: str
     source_id: str
     section: str
     article: str
-    text: str
+    content: str  # Changed from text to content to match ingestion
     score: float
     version_hash: str
     jurisdiction: str
     domain: str
     metadata: Dict
+    clause: str = ""  # Added clause field for logging
 
 
 class SparseRetriever:
@@ -114,19 +116,61 @@ class SparseRetriever:
         index_name = self.get_index_name(jurisdiction, domain)
         
         try:
+            # Extract multi-word phrases for exact phrase matching (2-4 words)
+            import re
+            phrases = re.findall(r'"([^"]+)"', query)  # Extract quoted phrases
+            words = query.replace('"', '').split()
+            
+            # Extract n-grams (2, 3, and 4 word sequences)
+            for n in [2, 3, 4]:
+                for i in range(len(words) - n + 1):
+                    phrase = ' '.join(words[i:i+n])
+                    if len(phrase) > 5:  # Only consider phrases longer than 5 chars
+                        phrases.append(phrase)
+            
+            # For definition queries ("What is X"), extract the term being defined
+            # and try to match it in "X means" patterns used in legal definitions
+            definition_match = re.match(r'what\s+is\s+(?:a|an|the\s+)?(.+?)(?:\s+under\s+.+)?$', query, re.IGNORECASE)
+            if definition_match:
+                term = definition_match.group(1).strip()
+                if len(term) > 3:  # Ignore very short terms
+                    # Try to match "term means" patterns common in legal definitions
+                    phrases.append(f"{term} means")
+                    phrases.append(f"{term}, in relation to")
+                    phrases.append(f"{term}, in relation to goods, means")
+            
+            # Remove standalone 4-digit years from query to reduce their score contribution
+            # Years like 1999, 2001, 2024 are near-universal in legal documents and shouldn't act as rare, high-signal terms
+            query_without_years = re.sub(r'\b(19|20)\d{2}\b', '', query)
+            query_without_years = ' '.join(query_without_years.split())  # Clean up extra spaces
+            
+            # Build query with phrase boosting
+            bool_query = {
+                "should": [
+                    {
+                        "multi_match": {
+                            "query": query_without_years,
+                            "fields": ["content", "clause^3", "section^2"],
+                            "type": "best_fields"
+                        }
+                    }
+                ]
+            }
+            
+            # Add exact phrase matches with high boost
+            for phrase in set(phrases):  # Deduplicate phrases
+                bool_query["should"].append({
+                    "match_phrase": {
+                        "content": {
+                            "query": phrase,
+                            "boost": 5.0  # High boost for exact phrase matches
+                        }
+                    }
+                })
+            
             search_body = {
                 "query": {
-                    "bool": {
-                        "must": [
-                            {
-                                "multi_match": {
-                                    "query": query,
-                                    "fields": ["text", "section", "article", "metadata.*"],
-                                    "type": "best_fields"
-                                }
-                            }
-                        ]
-                    }
+                    "bool": bool_query
                 },
                 "min_score": min_score,
                 "size": top_k
@@ -142,13 +186,15 @@ class SparseRetriever:
                     source_id=source.get('source_id', ''),
                     section=source.get('section', ''),
                     article=source.get('article', ''),
-                    text=source.get('text', ''),
+                    content=source.get('content', ''),
                     score=hit['_score'],
                     version_hash=source.get('version_hash', ''),
                     jurisdiction=source.get('jurisdiction', jurisdiction),
                     domain=source.get('domain', domain),
-                    metadata=source.get('metadata', {})
+                    metadata=source.get('metadata', {}),
+                    clause=source.get('clause', '')
                 ))
+                logger.info(f"Sparse: chunk_id={hit['_id'][:8]}..., clause={source.get('clause', 'N/A')}, score={hit['_score']:.4f}")
             
             logger.info(f"Retrieved {len(results)} results from {index_name}")
             return results
@@ -219,7 +265,7 @@ class SparseRetriever:
                     source_id=source.get('source_id', ''),
                     section=source.get('section', ''),
                     article=source.get('article', ''),
-                    text=source.get('text', ''),
+                    content=source.get('content', ''),
                     score=hit['_score'],
                     version_hash=source.get('version_hash', ''),
                     jurisdiction=source.get('jurisdiction', jurisdiction),

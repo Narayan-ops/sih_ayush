@@ -4,17 +4,49 @@ Uses BGE-reranker-large or equivalent for semantic reranking
 """
 
 import os
+import re
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 import logging
 
+logger = logging.getLogger(__name__)
+
 try:
     from sentence_transformers import CrossEncoder
-except ImportError:
+    logger.info("Successfully imported CrossEncoder from sentence-transformers")
+except ImportError as e:
     # Placeholder for when sentence-transformers is installed
+    logger.error(f"Failed to import sentence-transformers: {e}")
     CrossEncoder = None
 
-logger = logging.getLogger(__name__)
+
+def _extract_explicit_reference(query: str) -> Optional[str]:
+    """
+    Extract explicit clause/section reference from query if present.
+    
+    Patterns:
+    - "Section 3(p)" -> "3(p)"
+    - "3(p)" -> "3(p)"
+    - "clause 3(p)" -> "3(p)"
+    - "Section 3" -> "3"
+    
+    Returns:
+        Extracted reference string (e.g., "3(p)", "3") or None if no match
+    """
+    # Pattern for clause references like 3(p), 3(a), etc.
+    clause_pattern = re.compile(r'(?:section|clause)?\s*(\d+\([a-z]\))', re.IGNORECASE)
+    match = clause_pattern.search(query)
+    if match:
+        return match.group(1)
+    
+    # Pattern for simple section references like "Section 3", "3"
+    # Only match if NOT followed by a parenthesis (to avoid matching "3" in "3(p)")
+    section_pattern = re.compile(r'(?:section|clause)?\s*(\d+)(?!\s*\()', re.IGNORECASE)
+    match = section_pattern.search(query)
+    if match:
+        return match.group(1)
+    
+    return None
 
 
 @dataclass
@@ -24,13 +56,14 @@ class RerankedResult:
     source_id: str
     section: str
     article: str
-    text: str
+    content: str  # Changed from text to content to match ingestion
     original_score: float
     rerank_score: float
     version_hash: str
     jurisdiction: str
     domain: str
     metadata: Dict
+    clause: str = ""  # Added clause field for exact-match boost
 
 
 class CrossEncoderReranker:
@@ -92,7 +125,7 @@ class CrossEncoderReranker:
             return []
         
         # Prepare pairs for cross-encoder
-        pairs = [(query, result.text) for result in results]
+        pairs = [(query, result.content) for result in results]
         
         try:
             # Compute cross-encoder scores
@@ -106,8 +139,8 @@ class CrossEncoderReranker:
                     source_id=result.source_id,
                     section=result.section,
                     article=result.article,
-                    text=result.text,
-                    original_score=result.score,
+                    content=result.content,
+                    original_score=result.score if hasattr(result, 'score') else result.get('score', 0.0),
                     rerank_score=float(score),
                     version_hash=result.version_hash,
                     jurisdiction=result.jurisdiction,
@@ -159,7 +192,8 @@ class CrossEncoderReranker:
                 sparse_results, 
                 dense_weight, 
                 sparse_weight, 
-                top_k
+                top_k,
+                query
             )
         
         # Deduplicate by chunk_id
@@ -180,7 +214,7 @@ class CrossEncoderReranker:
             return []
         
         # Rerank combined results
-        pairs = [(query, result[1].text) for result in combined]
+        pairs = [(query, result[1].content) for result in combined]
         scores = self.model.predict(pairs)
         
         # Apply weighted scores
@@ -194,17 +228,42 @@ class CrossEncoderReranker:
                 source_id=result.source_id,
                 section=result.section,
                 article=result.article,
-                text=result.text,
-                original_score=result.score,
+                content=result.content,
+                original_score=result.score if hasattr(result, 'score') else result.get('score', 0.0),
                 rerank_score=adjusted_score,
                 version_hash=result.version_hash,
                 jurisdiction=result.jurisdiction,
                 domain=result.domain,
-                metadata=result.metadata
+                metadata=result.metadata,
+                clause=getattr(result, 'clause', '') or result.metadata.get('clause', '')
             ))
+        
+        # Apply exact-match boost for explicit clause/section references
+        explicit_ref = _extract_explicit_reference(query)
+        if explicit_ref:
+            logger.info(f"Query contains explicit reference: {explicit_ref}")
+            boosted_count = 0
+            for result in reranked:
+                # Check if result's clause or section matches the explicit reference
+                result_clause = getattr(result, 'clause', '')
+                result_section = str(result.section)
+                
+                if explicit_ref in result_clause or explicit_ref == result_section:
+                    # Apply 5x boost for exact match
+                    result.rerank_score *= 5.0
+                    boosted_count += 1
+                    logger.info(f"Boosted chunk_id={result.chunk_id[:8]}..., clause={result_clause}, section={result_section}, ref={explicit_ref}, new_score={result.rerank_score:.4f}")
+            
+            if boosted_count > 0:
+                logger.info(f"Applied exact-match boost to {boosted_count} results")
         
         # Sort by rerank score
         reranked.sort(key=lambda x: x.rerank_score, reverse=True)
+        
+        # Log final top-k ranking
+        logger.info(f"Final top-{min(len(reranked), top_k)} ranking:")
+        for i, result in enumerate(reranked[:top_k]):
+            logger.info(f"  {i+1}. chunk_id={result.chunk_id[:8]}..., clause={result.clause}, score={result.rerank_score:.4f}")
         
         return reranked[:top_k]
 
@@ -217,9 +276,9 @@ class CrossEncoderReranker:
                 source_id=result.source_id,
                 section=result.section,
                 article=result.article,
-                text=result.text,
-                original_score=result.score,
-                rerank_score=result.score,
+                content=result.content,
+                original_score=result.score if hasattr(result, 'score') else result.get('score', 0.0),
+                rerank_score=result.score if hasattr(result, 'score') else result.get('score', 0.0),
                 version_hash=result.version_hash,
                 jurisdiction=result.jurisdiction,
                 domain=result.domain,
@@ -235,7 +294,8 @@ class CrossEncoderReranker:
         sparse_results: List,
         dense_weight: float,
         sparse_weight: float,
-        top_k: int
+        top_k: int,
+        query: str
     ) -> List[RerankedResult]:
         """Simple score fusion without reranking"""
         # Combine and deduplicate
@@ -255,19 +315,42 @@ class CrossEncoderReranker:
         # Apply weights
         fused = []
         for result, weight in seen_ids.values():
-            fused.append(RerankedResult(
-                chunk_id=result.chunk_id,
-                source_id=result.source_id,
-                section=result.section,
-                article=result.article,
-                text=result.text,
-                original_score=result.score,
-                rerank_score=result.score * weight,
-                version_hash=result.version_hash,
-                jurisdiction=result.jurisdiction,
-                domain=result.domain,
-                metadata=result.metadata
-            ))
+            # Handle both object and dict results
+            if hasattr(result, 'chunk_id'):
+                content = result.content if hasattr(result, 'content') else result.get('content', '') if isinstance(result, dict) else result.get('text', '')
+                clause = getattr(result, 'clause', '') or result.metadata.get('clause', '')
+                fused.append(RerankedResult(
+                    chunk_id=result.chunk_id,
+                    source_id=result.source_id if hasattr(result, 'source_id') else result.get('source_id', ''),
+                    section=result.section if hasattr(result, 'section') else result.get('section', ''),
+                    article=result.article if hasattr(result, 'article') else result.get('article', ''),
+                    content=content,
+                    original_score=result.score if hasattr(result, 'score') else result.get('score', 0.0),
+                    rerank_score=(result.score if hasattr(result, 'score') else result.get('score', 0.0)) * weight,
+                    version_hash=result.version_hash if hasattr(result, 'version_hash') else result.get('version_hash', ''),
+                    jurisdiction=result.jurisdiction if hasattr(result, 'jurisdiction') else result.get('jurisdiction', ''),
+                    domain=result.domain if hasattr(result, 'domain') else result.get('domain', ''),
+                    metadata=result.metadata if hasattr(result, 'metadata') else result.get('metadata', {}),
+                    clause=clause
+                ))
+        
+        # Apply exact-match boost for explicit clause/section references
+        explicit_ref = _extract_explicit_reference(query)
+        if explicit_ref:
+            logger.info(f"Simple fusion: Query contains explicit reference: {explicit_ref}")
+            boosted_count = 0
+            for result in fused:
+                result_clause = result.clause
+                result_section = str(result.section)
+                
+                if explicit_ref in result_clause or explicit_ref == result_section:
+                    # Apply 5x boost for exact match
+                    result.rerank_score *= 5.0
+                    boosted_count += 1
+                    logger.info(f"Simple fusion: Boosted chunk_id={result.chunk_id[:8]}..., clause={result_clause}, section={result_section}, ref={explicit_ref}, new_score={result.rerank_score:.4f}")
+            
+            if boosted_count > 0:
+                logger.info(f"Simple fusion: Applied exact-match boost to {boosted_count} results")
         
         fused.sort(key=lambda x: x.rerank_score, reverse=True)
         return fused[:top_k]

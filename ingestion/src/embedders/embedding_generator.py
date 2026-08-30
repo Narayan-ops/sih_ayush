@@ -6,9 +6,13 @@ Uses BGE-large/E5-large baseline with support for reranker integration
 
 from typing import List, Dict, Any, Optional
 import logging
-import hashlib
+import os
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
 
 class EmbeddingGenerator:
     """
@@ -17,68 +21,80 @@ class EmbeddingGenerator:
     """
     
     def __init__(self, model_name: str = "BAAI/bge-large-en-v1.5"):
-        self.model_name = model_name
-        # Model would be loaded here in actual implementation
-        # For now, we'll use a mock implementation
-        logger.info(f"Initialized embedding generator with model: {model_name}")
+        self.model_name = model_name or os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5")
+        self.device = os.getenv("EMBEDDING_DEVICE", "cpu")
+        self.model = None
+        self._load_model()
+    
+    def _load_model(self):
+        """Load the real embedding model using sentence-transformers"""
+        try:
+            from sentence_transformers import SentenceTransformer
+            self.model = SentenceTransformer(self.model_name, device=self.device)
+            logger.info(f"Loaded real embedding model: {self.model_name} on {self.device}")
+        except ImportError:
+            logger.error("sentence-transformers not installed. Cannot generate real embeddings.")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to load embedding model: {e}")
+            raise
     
     def generate_embeddings(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Generate embeddings for a list of chunks
+        Generate embeddings for a list of chunks using the real BGE model
         """
+        if self.model is None:
+            raise RuntimeError("Embedding model not loaded")
+        
         embedded_chunks = []
         
         for chunk in chunks:
             content = chunk["content"]
             
-            # Generate embedding (mock implementation)
-            embedding = self._mock_generate_embedding(content)
+            # Generate real embedding using BGE model
+            embedding = self.model.encode(content, convert_to_numpy=True)
             
             # Add embedding to chunk
             embedded_chunk = {
                 **chunk,
-                "embedding": embedding,
+                "embedding": embedding.tolist(),
                 "embedding_model": self.model_name,
                 "embedding_dimension": len(embedding)
             }
             embedded_chunks.append(embedded_chunk)
         
-        logger.info(f"Generated embeddings for {len(embedded_chunks)} chunks")
+        logger.info(f"Generated real embeddings for {len(embedded_chunks)} chunks using {self.model_name}")
         return embedded_chunks
-    
-    def _mock_generate_embedding(self, text: str) -> List[float]:
-        """
-        Mock embedding generation for development
-        In production, this would use the actual embedding model
-        """
-        # Generate a deterministic mock embedding based on text hash
-        text_hash = hashlib.md5(text.encode()).hexdigest()
-        
-        # Convert hash to a 1024-dimensional vector (BGE-large dimension)
-        embedding = []
-        for i in range(1024):
-            # Use hash bytes to generate consistent values
-            byte_val = int(text_hash[i % len(text_hash)], 16)
-            normalized_val = byte_val / 15.0  # Normalize to 0-1
-            embedding.append(normalized_val)
-        
-        return embedding
     
     def generate_single_embedding(self, text: str) -> List[float]:
         """
-        Generate embedding for a single text
+        Generate embedding for a single text using the real BGE model
         """
-        return self._mock_generate_embedding(text)
+        if self.model is None:
+            raise RuntimeError("Embedding model not loaded")
+        
+        embedding = self.model.encode(text, convert_to_numpy=True)
+        return embedding.tolist()
     
     def get_model_info(self) -> Dict[str, Any]:
         """
         Get information about the embedding model
         """
+        if self.model is None:
+            return {
+                "model_name": self.model_name,
+                "dimension": 1024,  # BGE-large dimension
+                "max_tokens": 512,  # Max token length
+                "description": "Self-hosted embedding model per ADR-004",
+                "status": "not_loaded"
+            }
+        
         return {
             "model_name": self.model_name,
-            "dimension": 1024,  # BGE-large dimension
-            "max_tokens": 512,  # Max token length
-            "description": "Self-hosted embedding model per ADR-004"
+            "dimension": self.model.get_sentence_embedding_dimension(),
+            "max_tokens": 512,
+            "description": "Self-hosted embedding model per ADR-004",
+            "status": "loaded"
         }
 
 # Global embedding generator instance

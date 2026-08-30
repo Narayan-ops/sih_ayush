@@ -19,18 +19,20 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+@dataclass
 class RetrievalResult:
     """Represents a single retrieval result"""
     chunk_id: str
     source_id: str
     section: str
     article: str
-    text: str
+    content: str  # Changed from text to content to match ingestion
     score: float
     version_hash: str
     jurisdiction: str
     domain: str
     metadata: Dict
+    clause: str = ""  # Added clause field for logging
 
 
 class DenseRetriever:
@@ -115,9 +117,11 @@ class DenseRetriever:
                 collection_name=collection_name,
                 query_vector=query_embedding,
                 limit=top_k,
-                score_threshold=score_threshold,
+                score_threshold=0.4,  # Lowered from 0.7 to 0.4 based on actual BGE scores (~0.45-0.60)
                 with_payload=True
             )
+            
+            logger.info(f"Qdrant search returned {len(search_results)} results with threshold=0.4")
             
             results = []
             for result in search_results:
@@ -127,13 +131,15 @@ class DenseRetriever:
                     source_id=payload.get('source_id', ''),
                     section=payload.get('section', ''),
                     article=payload.get('article', ''),
-                    text=payload.get('text', ''),
+                    content=payload.get('content', ''),
                     score=result.score,
                     version_hash=payload.get('version_hash', ''),
                     jurisdiction=payload.get('jurisdiction', jurisdiction),
                     domain=payload.get('domain', domain),
-                    metadata=payload.get('metadata', {})
+                    metadata=payload.get('metadata', {}),
+                    clause=payload.get('clause', '')
                 ))
+                logger.info(f"Dense: chunk_id={result.id[:8]}..., clause={payload.get('clause', 'N/A')}, score={result.score:.4f}")
             
             logger.info(f"Retrieved {len(results)} results from {collection_name}")
             return results
@@ -194,7 +200,7 @@ class DenseRetriever:
                     source_id=payload.get('source_id', ''),
                     section=payload.get('section', ''),
                     article=payload.get('article', ''),
-                    text=payload.get('text', ''),
+                    content=payload.get('content', ''),
                     score=result.score,
                     version_hash=payload.get('version_hash', ''),
                     jurisdiction=payload.get('jurisdiction', jurisdiction),

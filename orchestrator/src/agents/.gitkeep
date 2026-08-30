@@ -1,0 +1,12 @@
+# Agents directory for Orchestrator
+#
+# This directory is intentionally empty for Phase 1 MVP.
+#
+# Phase 2 Implementation (Post-MVP):
+# - Agentic orchestrator using LangGraph state machine
+# - ABS-compliance helper for prior-art detection
+# - TKDL prior-art pointer integration
+# - Human escalation router for complex queries
+# - Multi-step reasoning for complex IP scenarios
+#
+# Per ARCHITECTURE.md: Phase 2 adds reasoning depth through knowledge graph and agents
