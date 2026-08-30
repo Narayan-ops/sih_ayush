@@ -13,6 +13,10 @@ from slowapi.errors import RateLimitExceeded
 import time
 import logging
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 from src.routes import chat, health
 

@@ -1,11 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { CitationDisplay, ConfidenceBadge } from './index';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  citations?: Citation[];
-  confidence?: number;
+  citations?: any[];
+  confidence?: "low" | "medium" | "high";
+  formulation_class?: string | null;
+  requires_escalation?: boolean;
   timestamp: Date;
 }
 
@@ -65,9 +68,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: response?.answer || response?.content || JSON.stringify(response) || '',
+        content: response?.message?.content || response?.answer || response?.content || JSON.stringify(response) || '',
         citations: response?.citations,
         confidence: response?.confidence,
+        formulation_class: response?.formulation_class,
+        requires_escalation: response?.requires_escalation,
         timestamp: new Date()
       };
 
@@ -115,25 +120,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               <p>{message.content}</p>
               
               {message.role === 'assistant' && message.citations && (
-                <div className="citations">
-                  <strong>Sources:</strong>
-                  <ul>
-                    {message.citations.map((citation, idx) => (
-                      <li key={idx} className="citation-item">
-                        [{citation.source_id}, {citation.section}, {citation.article}]
-                        <span className="citation-confidence">
-                          (Confidence: {(citation.confidence * 100).toFixed(0)}%)
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                <CitationDisplay citations={message.citations} />
               )}
               
               {message.role === 'assistant' && message.confidence !== undefined && (
-                <div className="confidence-badge">
-                  Confidence: {(message.confidence * 100).toFixed(0)}%
-                </div>
+                <ConfidenceBadge confidence={message.confidence} />
               )}
             </div>
             <div className="message-timestamp">

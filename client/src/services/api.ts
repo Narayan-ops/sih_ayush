@@ -11,10 +11,15 @@ export interface ChatRequest {
 }
 
 export interface ChatResponse {
-  answer: string;
-  citations: Citation[];
-  confidence: number;
-  corpus_version: string;
+  message: {
+    role: string;
+    content: string;
+    timestamp: string | null;
+  };
+  citations: any[];
+  confidence: "low" | "medium" | "high";
+  formulation_class: string | null;
+  requires_escalation: boolean;
 }
 
 export interface Citation {
@@ -36,7 +41,7 @@ export class ApiService {
   }
 
   async sendMessage(request: ChatRequest): Promise<ChatResponse> {
-    const response = await fetch(`${this.baseUrl}/api/chat`, {
+    const response = await fetch(`${this.baseUrl}/api/v1/chat/`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
