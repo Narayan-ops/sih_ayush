@@ -43,10 +43,10 @@ RETRIEVED CONTEXT:
 USER QUERY:
 {user_input}
 
-Based on the retrieved context, answer the user's question. Every claim must be supported by the provided context."""
+Answer the user's question using only the provided context. Every claim must be supported by the context. Do not add information not found in the context. Keep the answer concise. Do not use introductory phrases like "Based on the context" or "According to the documents." Answer:"""
         }
     
-    def build_prompt(self, template_name: str, user_input: str, **kwargs) -> str:
+    def build_prompt(self, template_name: str, user_input: str, context: str = None, **kwargs) -> str:
         """
         Build a prompt from template with strict separation
         User input is never concatenated into instruction regions
@@ -60,10 +60,11 @@ Based on the retrieved context, answer the user's question. Every claim must be 
         sanitized_input = self._sanitize_for_prompt(user_input)
         
         # Build prompt with clear separation
-        prompt = template.format(
-            user_input=sanitized_input,
-            **kwargs
-        )
+        format_kwargs = {"user_input": sanitized_input, **kwargs}
+        if context is not None:
+            format_kwargs["context"] = context
+        
+        prompt = template.format(**format_kwargs)
         
         return prompt
     

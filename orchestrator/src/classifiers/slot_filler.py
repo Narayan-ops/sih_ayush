@@ -26,6 +26,7 @@ class SlotFiller:
     async def extract_slot(self, user_input: str, question: str, slot_name: str, options: Optional[List[str]] = None) -> Any:
         """
         Extract a specific slot value from user input using the LLM
+        Only auto-fills when the answer is unambiguously and explicitly stated in the original message
         """
         # First sanitize the input
         sanitization_result = input_guard.sanitize_input(user_input, context="classifier")
@@ -33,27 +34,26 @@ class SlotFiller:
         if sanitization_result.is_suspicious:
             logger.warning(f"Suspicious input detected for slot {slot_name}: {sanitization_result.flags}")
         
-        # Build the prompt with clear separation
-        prompt = self._build_extraction_prompt(
-            sanitization_result.sanitized_input, 
-            question, 
-            slot_name,
-            options
-        )
+        # Check if the slot value is explicitly stated in the original input
+        # This is a simple heuristic: if an option appears as an exact phrase match, auto-fill
+        if options:
+            for option in options:
+                if option.lower() in sanitization_result.sanitized_input.lower():
+                    logger.info(f"Slot {slot_name} explicitly stated in input: {option}")
+                    return option
+        else:
+            # Handle yes/no decision tree branches
+            lower_input = sanitization_result.sanitized_input.lower()
+            if "yes" in lower_input or "true" in lower_input or "1" in lower_input:
+                logger.info(f"Slot {slot_name} explicitly stated as yes in input")
+                return True
+            elif "no" in lower_input or "false" in lower_input or "0" in lower_input:
+                logger.info(f"Slot {slot_name} explicitly stated as no in input")
+                return False
         
-        try:
-            # Get LLM response
-            response = await self.provider.generate(prompt)
-            
-            # Parse the response to extract the slot value
-            slot_value = self._parse_slot_value(response.content, slot_name, options)
-            
-            logger.info(f"Extracted slot {slot_name} = {slot_value}")
-            return slot_value
-            
-        except Exception as e:
-            logger.error(f"Error extracting slot {slot_name}: {e}")
-            return None
+        # If not explicitly stated, don't use LLM guessing - return None to ask user
+        logger.info(f"Slot {slot_name} not explicitly stated in input, will ask user")
+        return None
     
     def _build_extraction_prompt(self, user_input: str, question: str, slot_name: str, options: Optional[List[str]] = None) -> str:
         """

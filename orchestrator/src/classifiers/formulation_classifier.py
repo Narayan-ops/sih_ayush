@@ -24,10 +24,17 @@ class FormulationClassifier:
         self.slot_filler = slot_filler
         self.input_guard = input_guard
     
-    async def classify(self, user_input: str, session_context: Dict[str, Any]) -> Dict[str, Any]:
+    async def classify(self, user_input: str, session_context: Dict[str, Any], existing_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Classify a formulation description
-        Returns classification result with formulation class
+        Supports multi-turn classification with session state
+        
+        Args:
+            user_input: Current user message
+            session_context: Session context (jurisdiction, etc.)
+            existing_state: Previous classification state to resume from (for multi-turn)
+        
+        Returns classification result with formulation class or clarifying question
         """
         # Sanitize input first
         sanitization_result = self.input_guard.sanitize_input(user_input, context="classifier")
@@ -41,85 +48,116 @@ class FormulationClassifier:
                 "requires_escalation": True
             }
         
-        # Start decision tree traversal
-        current_state = ClassificationState(
-            current_step="start",
-            collected_slots={},
-            is_complete=False
-        )
-        
-        # Collect slots through dialogue
-        max_iterations = 20  # Prevent infinite loops
-        iteration = 0
-        
-        while not current_state.is_complete and iteration < max_iterations:
-            iteration += 1
-            
-            # Get next question from decision tree
-            question = self.decision_tree.get_next_question(current_state.current_step)
-            
-            if question is None:
-                # Decision tree reached a terminal state
-                break
-            
-            # Extract slot value using LLM
-            node = self.decision_tree.decision_tree[current_state.current_step]
-            slot_name = node["slot_name"]
-            options = node.get("options")
-            
-            if options:
-                option_list = list(options.keys())
-            else:
-                option_list = None
-            
-            slot_value = await self.slot_filler.extract_slot(
-                sanitization_result.sanitized_input,
-                question,
-                slot_name,
-                option_list
+        # Resume from existing state or start fresh
+        if existing_state:
+            current_state = ClassificationState(
+                current_step=existing_state.get("current_step", "start"),
+                collected_slots=existing_state.get("collected_slots", {}),
+                is_complete=False
             )
-            
-            if slot_value is None:
-                # Could not extract slot, escalate
-                return {
-                    "formulation_class": None,
-                    "status": "slot_extraction_failed",
-                    "requires_escalation": True,
-                    "failed_slot": slot_name
-                }
-            
-            # Add to collected slots
-            current_state.collected_slots[slot_name] = slot_value
-            
-            # Execute decision tree step
-            current_state = self.decision_tree.classify(current_state.collected_slots)
+            logger.info(f"Resuming classification from step: {current_state.current_step}")
+        else:
+            current_state = ClassificationState(
+                current_step="start",
+                collected_slots={},
+                is_complete=False
+            )
+            logger.info("Starting fresh classification")
         
-        # Return final classification
-        if current_state.is_complete:
-            if current_state.formulation_class:
-                return {
-                    "formulation_class": current_state.formulation_class.value,
-                    "status": "classified",
-                    "collected_slots": current_state.collected_slots,
-                    "requires_escalation": False
-                }
+        # Single iteration per call (multi-turn)
+        # Get next question from decision tree
+        question = self.decision_tree.get_next_question(current_state.current_step)
+        
+        if question is None:
+            # Decision tree reached a terminal state
+            current_state = self.decision_tree.classify(current_state.collected_slots)
+            
+            if current_state.is_complete:
+                if current_state.formulation_class:
+                    return {
+                        "formulation_class": current_state.formulation_class.value,
+                        "status": "classified",
+                        "collected_slots": current_state.collected_slots,
+                        "requires_escalation": False
+                    }
+                else:
+                    # Escalation case
+                    return {
+                        "formulation_class": None,
+                        "status": "escalated",
+                        "escalation_reason": getattr(current_state, "escalation_reason", "Unknown"),
+                        "collected_slots": current_state.collected_slots,
+                        "requires_escalation": True
+                    }
             else:
-                # Escalation case
+                # Incomplete but no more questions
                 return {
                     "formulation_class": None,
-                    "status": "escalated",
-                    "escalation_reason": getattr(current_state, "escalation_reason", "Unknown"),
+                    "status": "incomplete",
+                    "current_step": current_state.current_step,
                     "collected_slots": current_state.collected_slots,
                     "requires_escalation": True
                 }
+        
+        # Try to extract slot from current user_input
+        node = self.decision_tree.decision_tree[current_state.current_step]
+        slot_name = node["slot_name"]
+        options = node.get("options")
+        
+        if options:
+            option_list = list(options.keys())
         else:
-            # Incomplete classification
+            option_list = None
+        
+        slot_value = await self.slot_filler.extract_slot(
+            sanitization_result.sanitized_input,
+            question,
+            slot_name,
+            option_list
+        )
+        
+        if slot_value is not None:
+            # Slot was explicitly stated - add to collected slots and continue
+            current_state.collected_slots[slot_name] = slot_value
+            current_state = self.decision_tree.classify(current_state.collected_slots)
+            
+            # Check if classification is now complete
+            if current_state.is_complete:
+                if current_state.formulation_class:
+                    return {
+                        "formulation_class": current_state.formulation_class.value,
+                        "status": "classified",
+                        "collected_slots": current_state.collected_slots,
+                        "requires_escalation": False
+                    }
+                else:
+                    return {
+                        "formulation_class": None,
+                        "status": "escalated",
+                        "escalation_reason": getattr(current_state, "escalation_reason", "Unknown"),
+                        "collected_slots": current_state.collected_slots,
+                        "requires_escalation": True
+                    }
+            else:
+                # Need more information - get next question
+                next_question = self.decision_tree.get_next_question(current_state.current_step)
+                return {
+                    "formulation_class": None,
+                    "status": "needs_clarification",
+                    "current_step": current_state.current_step,
+                    "clarifying_question": next_question,
+                    "collected_slots": current_state.collected_slots,
+                    "requires_escalation": False
+                }
+        else:
+            # Slot not explicitly stated - ask user
             return {
                 "formulation_class": None,
-                "status": "incomplete",
+                "status": "needs_clarification",
                 "current_step": current_state.current_step,
+                "clarifying_question": question,
                 "collected_slots": current_state.collected_slots,
-                "requires_escalation": True
+                "requires_escalation": False
             }
     
     def ask_clarifying_question(self, current_state: Dict[str, Any]) -> Optional[str]:

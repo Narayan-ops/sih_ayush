@@ -203,14 +203,19 @@ class DecisionTreeClassifier:
             
             iteration += 1
             
+            # Update current_step to this node
+            state.current_step = current_node
+            
             if node.get("action") == "classify":
                 state.formulation_class = node["class"]
                 state.is_complete = True
+                logger.info(f"Decision tree reached classification node: {current_node}, class={state.formulation_class}")
                 break
             elif node.get("action") == "escalate":
                 state.formulation_class = None
                 state.is_complete = True
                 state.escalation_reason = node.get("reason")
+                logger.info(f"Decision tree reached escalation node: {current_node}, reason={state.escalation_reason}")
                 break
             else:
                 # Get the slot value and determine next node
@@ -219,7 +224,6 @@ class DecisionTreeClassifier:
                 
                 if slot_value is None:
                     # Need to ask this question
-                    state.current_step = current_node
                     break
                 
                 # Determine next node based on slot value

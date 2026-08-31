@@ -25,6 +25,8 @@ from src.llm.config import llm_config
 from src.llm.provider_abstraction import LLMProviderFactory
 from src.embeddings.query_embedder import query_embedder
 from src.retrieval.reranker import _extract_explicit_reference, RerankedResult
+from src.security.prompt_template import prompt_template
+import re
 
 app = FastAPI(title="IP-SAKTI Orchestrator", version="0.1.0")
 
@@ -55,6 +57,26 @@ class QueryResponse(BaseModel):
     jurisdiction: str
     model_used: str
     provider_used: str
+
+
+class ClassificationRequest(BaseModel):
+    """Request model for classification endpoint"""
+    user_input: str
+    existing_state: Optional[Dict[str, Any]] = None
+    session_context: Optional[Dict[str, Any]] = None
+
+
+class ClassificationResponse(BaseModel):
+    """Response model for classification endpoint"""
+    formulation_class: Optional[str]
+    status: str  # "classified", "needs_clarification", "escalated", "incomplete", "suspicious_input"
+    current_step: Optional[str] = None
+    clarifying_question: Optional[str] = None
+    collected_slots: Optional[Dict[str, Any]] = None
+    requires_escalation: bool
+    escalation_reason: Optional[str] = None
+    flags: Optional[List[str]] = None
+    failed_slot: Optional[str] = None
 
 
 @app.get("/health")
@@ -98,6 +120,98 @@ async def health_check():
     }
 
 
+def _extract_entities(text: str) -> set:
+    """
+    Extract only factual entities that must be preserved exactly in Pass 2.
+    Returns a set of normalized entities for safety comparison.
+    
+    Focuses on: citation brackets and numbers only.
+    NOT: proper nouns, common words, or general NLP entities.
+    """
+    entities = set()
+    
+    # Extract citation brackets verbatim - these must appear exactly unchanged
+    # Matches: [Section 1-11, Clause 2(1)(m)] or similar patterns
+    citation_brackets = re.findall(r'\[[^\]]+\]', text)
+    entities.update(citation_brackets)
+    
+    # Extract all numbers (including section numbers like 3(p), years like 1970, etc.)
+    numbers = re.findall(r'\b\d+\b', text)
+    entities.update(numbers)
+    
+    return entities
+
+
+async def rewrite_pass2(
+    original_answer: str,
+    user_query: str,
+    llm_provider
+) -> str:
+    """
+    Pass 2: Rewrite for plain-language clarity without altering facts.
+    
+    If the rewrite introduces new entities/claims not in the original,
+    return the original answer unchanged (safety fallback).
+    """
+    original_entities = _extract_entities(original_answer)
+    
+    # Extract citation brackets from original for verification
+    original_citations = re.findall(r'\[[^\]]+\]', original_answer)
+    
+    rewrite_prompt = f"""You are rewriting a legal information answer for clarity. Your audience is AYUSH startup founders, practitioners, and MSME owners.
+
+ORIGINAL ANSWER (do not change facts):
+{original_answer}
+
+USER QUESTION:
+{user_query}
+
+REWRITE INSTRUCTIONS:
+- Restructure to start with a direct answer in 1-2 plain-language sentences, then follow with the citation-backed explanation.
+- Rephrase for plain-language clarity — explain legal jargon naturally.
+- DO NOT add any new factual claims, numbers, or legal citations not present in the original answer.
+- DO NOT remove any factual claims or citations from the original answer.
+- Keep all citation brackets [like this] exactly as they appear in the original answer — do not modify them.
+
+Rewritten answer:"""
+    
+    try:
+        rewrite_response = await llm_provider.generate(rewrite_prompt)
+        rewritten_answer = rewrite_response.content
+        
+        # Safety check: extract entities from rewritten answer
+        rewritten_entities = _extract_entities(rewritten_answer)
+        
+        # Check for new entities (hallucination detection)
+        new_entities = rewritten_entities - original_entities
+        
+        # Check for missing entities (removal detection)
+        missing_entities = original_entities - rewritten_entities
+        
+        # Check if citation brackets are preserved verbatim
+        rewritten_citations = re.findall(r'\[[^\]]+\]', rewritten_answer)
+        citations_match = set(original_citations) == set(rewritten_citations)
+        
+        if new_entities:
+            logger.warning(f"Pass 2 introduced new entities, discarding rewrite: {new_entities}")
+            return original_answer
+        
+        if missing_entities:
+            logger.warning(f"Pass 2 removed entities, discarding rewrite: {missing_entities}")
+            return original_answer
+        
+        if not citations_match:
+            logger.warning(f"Pass 2 modified citation brackets, discarding rewrite. Original: {original_citations}, Rewritten: {rewritten_citations}")
+            return original_answer
+        
+        logger.info("Pass 2 rewrite accepted")
+        return rewritten_answer
+        
+    except Exception as e:
+        logger.error(f"Pass 2 rewrite failed: {e}, using original answer")
+        return original_answer
+
+
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """
@@ -108,13 +222,18 @@ async def query(request: QueryRequest):
         logger.info(f"Received query: {request.query[:100]}... (jurisdiction: {request.jurisdiction})")
         
         # Step 1: Classify formulation type
-        classification_result = await formulation_classifier.classify(
-            user_input=request.query,
-            session_context={"jurisdiction": request.jurisdiction}
-        )
-        
-        formulation_type = classification_result.get("formulation_class")
-        logger.info(f"Classification result: {formulation_type}")
+        # Use provided formulation_type if available (from gateway multi-turn classification)
+        # Otherwise, run classification inline
+        if request.formulation_type:
+            formulation_type = request.formulation_type
+            logger.info(f"Using provided formulation_type: {formulation_type}")
+        else:
+            classification_result = await formulation_classifier.classify(
+                user_input=request.query,
+                session_context={"jurisdiction": request.jurisdiction}
+            )
+            formulation_type = classification_result.get("formulation_class")
+            logger.info(f"Classification result: {formulation_type}")
         
         # Step 2: Retrieve relevant documents using hybrid retriever
         # Generate real query embedding using the same model as ingestion
@@ -451,25 +570,21 @@ async def query(request: QueryRequest):
         llm_provider = llm_config.get_provider(provider_name)
         
         # Build context from retrieved documents with clause/section metadata
+        # Include top 10 chunks to provide more surrounding context for better explanation
         context = "\n\n".join([
             f"Section {result.section}, Clause {result.clause}: {result.content}"
-            for result in deduplicated_results[:5]
+            for result in deduplicated_results[:10]
         ])
         
-        logger.info(f"Context built from {len(deduplicated_results[:5])} chunks")
+        logger.info(f"Context built from {len(deduplicated_results[:10])} chunks")
         logger.info(f"Context text:\n{context}")
         
-        prompt = f"""Answer the user's question directly using the provided context.
-Each document includes its section/clause identifier in parentheses.
-Provide a clear, concise answer without introductory phrases like "Based on the context" or "According to the documents".
-Only say "answer not in context" if no document contains relevant information for the question.
-
-Context:
-{context}
-
-Question: {request.query}
-
-Answer:"""
+        # Use the prompt template for generation
+        prompt = prompt_template.build_prompt(
+            "generation",
+            user_input=request.query,
+            context=context
+        )
         
         logger.info(f"Full prompt sent to LLM:\n{prompt}")
         
@@ -538,6 +653,13 @@ Answer:"""
                         "confidence": citation.confidence
                     })
         
+        # Step 9: Pass 2 rewrite for plain-language clarity
+        final_answer = await rewrite_pass2(
+            original_answer=final_answer,
+            user_query=request.query,
+            llm_provider=llm_provider
+        )
+        
         return QueryResponse(
             answer=final_answer,
             citations=citations_list,
@@ -550,6 +672,38 @@ Answer:"""
         
     except Exception as e:
         logger.error(f"Query processing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/classify")
+async def classify(request: ClassificationRequest):
+    """
+    Formulation classification endpoint
+    Supports multi-turn classification with session state
+    
+    Args:
+        request: Classification request with user input and optional existing state
+    
+    Returns:
+        Classification result with formulation class or clarifying question
+    """
+    try:
+        logger.info(f"Received classification request: user_input='{request.user_input}', existing_state={request.existing_state}")
+        
+        # Call formulation classifier
+        session_context = request.session_context or {}
+        result = await formulation_classifier.classify(
+            user_input=request.user_input,
+            session_context=session_context,
+            existing_state=request.existing_state
+        )
+        
+        logger.info(f"Classification result: status={result.get('status')}, formulation_class={result.get('formulation_class')}")
+        
+        return ClassificationResponse(**result)
+        
+    except Exception as e:
+        logger.error(f"Classification failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

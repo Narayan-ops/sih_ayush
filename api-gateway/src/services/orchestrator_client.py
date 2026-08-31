@@ -37,6 +37,26 @@ class QueryResponse(BaseModel):
     provider_used: str
 
 
+class ClassificationRequest(BaseModel):
+    """Request model for classification endpoint"""
+    user_input: str
+    existing_state: Optional[Dict[str, Any]] = None
+    session_context: Optional[Dict[str, Any]] = None
+
+
+class ClassificationResponse(BaseModel):
+    """Response model matching orchestrator's ClassificationResponse"""
+    formulation_class: Optional[str]
+    status: str
+    current_step: Optional[str] = None
+    clarifying_question: Optional[str] = None
+    collected_slots: Optional[Dict[str, Any]] = None
+    requires_escalation: bool
+    escalation_reason: Optional[str] = None
+    flags: Optional[List[str]] = None
+    failed_slot: Optional[str] = None
+
+
 class OrchestratorClient:
     """
     Client for communicating with the Orchestrator service
@@ -94,6 +114,44 @@ class OrchestratorClient:
         except Exception as e:
             logger.error(f"Error sending query request: {type(e).__name__}: {e}")
             logger.error(f"Request URL: {self.orchestrator_url}/query")
+            logger.error(f"Request body: {request.dict()}")
+            raise
+
+    async def send_classification_request(
+        self,
+        request: ClassificationRequest,
+        headers: Dict[str, str]
+    ) -> ClassificationResponse:
+        """
+        Send classification request to orchestrator's /classify endpoint
+        
+        Args:
+            request: Classification request with user input and state
+            headers: Request headers (including auth tokens)
+            
+        Returns:
+            Classification response with result or clarifying question
+        """
+        try:
+            response = await self.client.post(
+                f"{self.orchestrator_url}/classify",
+                json=request.dict(),
+                headers=headers,
+                timeout=120.0
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            return ClassificationResponse(**data)
+            
+        except httpx.HTTPError as e:
+            logger.error(f"HTTP error communicating with orchestrator: {type(e).__name__}: {e}")
+            logger.error(f"Request URL: {self.orchestrator_url}/classify")
+            logger.error(f"Request body: {request.dict()}")
+            raise
+        except Exception as e:
+            logger.error(f"Error sending classification request: {type(e).__name__}: {e}")
+            logger.error(f"Request URL: {self.orchestrator_url}/classify")
             logger.error(f"Request body: {request.dict()}")
             raise
 
