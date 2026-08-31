@@ -1,338 +1,134 @@
-"""
-Chat Routes
-Handles chat/conversation endpoints for the IP-SAKTI Sahayak interface
-"""
+"""Durable, jurisdiction-safe chat routes for IP-SAKTI Sahayak."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any, Literal
 import logging
-import time
-import uuid
+from typing import Any, Dict, List, Literal, Optional
 
-from src.middleware.auth import verify_token, get_current_user
-from src.middleware.consent import require_consent, ConsentType
-from src.services.orchestrator_client import OrchestratorClient, QueryRequest, ClassificationRequest
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
+
+from src.middleware.auth import get_current_user, verify_token
+from src.services.orchestrator_client import ClassificationRequest, OrchestratorClient, QueryRequest
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
-
-# Initialize orchestrator client
 orchestrator_client = OrchestratorClient()
 
-# Simple in-memory session store
-# TODO: Replace with Redis/PostgreSQL for production
-classification_sessions: Dict[str, Dict] = {}
-
-def create_session(session_id: str) -> Dict:
-    return {
-        "session_id": session_id,
-        "created_at": time.time(),
-        "classification_state": None,
-        "messages": [],
-        "original_query": None  # Store original user query for after classification
-    }
-
-def get_session_state(session_id: str) -> Optional[Dict]:
-    return classification_sessions.get(session_id)
-
-def update_session_state(session_id: str, state: Dict):
-    if session_id in classification_sessions:
-        classification_sessions[session_id]["classification_state"] = state
-        logger.info(f"Updated session {session_id} with state: {state}")
-
-def _is_formulation_query(message: str) -> bool:
-    """
-    Skip classification for clearly non-formulation queries
-    KNOWN-CRUDE HEURISTIC: This will misclassify some formulation questions phrased as "what is"
-    This is intentional debt, not something to perfect right now.
-    """
-    lower_msg = message.lower()
-    
-    # Skip definition questions
-    if lower_msg.startswith("what is") or lower_msg.startswith("what are"):
-        return False
-    
-    # Skip "how to" questions that aren't about formulation
-    if lower_msg.startswith("how to") and "register" in lower_msg:
-        return False
-    
-    # Otherwise, assume it might be a formulation description
-    return True
 
 class ChatMessage(BaseModel):
-    """Chat message model"""
-    role: str  # "user" or "assistant"
+    role: Literal["user", "assistant"]
     content: str
     timestamp: Optional[str] = None
 
+
 class ChatRequest(BaseModel):
-    """Chat request model"""
     message: str = Field(min_length=1, max_length=5000)
     jurisdiction: Literal["india", "international", "comparative"] = "india"
     session_id: Optional[str] = None
     use_external_llm: bool = False
-    classification_state: Optional[Dict[str, Any]] = None  # For multi-turn classification
-    
-    class Config:
-        arbitrary_types_allowed = True
+
 
 class ChatResponse(BaseModel):
-    """Chat response model"""
     message: ChatMessage
-    citations: List[dict]
-    confidence: str  # "high", "medium", "low"
+    citations: List[Dict[str, Any]]
+    confidence: Literal["low", "medium", "high"]
     formulation_class: Optional[str] = None
     requires_escalation: bool = False
+    session_id: str
 
-@router.post("/")
-async def chat(
-    request: ChatRequest,
-    current_user: Optional[dict] = Depends(get_current_user)  # Optional for dev testing
-):
-    """
-    Main chat endpoint
-    Routes to orchestrator for processing
-    """
-    try:
-        logger.info(f"Received chat request: message='{request.message}', jurisdiction='{request.jurisdiction}', session_id='{request.session_id}'")
-        
-        # Do not silently ignore an external-model request.  The durable
-        # consent/audit flow is not yet connected, so fail closed.
-        if request.use_external_llm:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="External LLM use requires the verified, logged consent flow, which is not enabled in this deployment."
-            )
 
-        # Comparative mode must never be silently mapped to one namespace. The
-        # current response contract has one answer/citation set, so it cannot
-        # faithfully render the required two independent columns yet.
-        if request.jurisdiction == "comparative":
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Comparative mode is temporarily unavailable; select India or International for a structurally isolated answer."
-            )
-        
-        # Generate session_id if not provided
-        if not request.session_id:
-            request.session_id = str(uuid.uuid4())
-        
-        # Get or create session
-        session = get_session_state(request.session_id)
-        if not session:
-            session = create_session(request.session_id)
-            classification_sessions[request.session_id] = session
-        
-        # Check if classification is in progress
-        classification_state = session.get("classification_state")
-        
-        # Initialize formulation_class to None unless classification completes
-        formulation_class = None
-        
-        if classification_state and classification_state.get("status") == "needs_clarification":
-            # User is answering a clarifying question - resume classification
-            logger.info(f"Resuming classification with user answer: '{request.message}'")
-            
-            # Build headers for orchestrator calls
-            orchestrator_headers = {}
-            if current_user:
-                orchestrator_headers["X-User-ID"] = current_user.get("user_id", "unknown")
-            
-            # Call orchestrator's formulation classifier with existing state
-            classification_request = ClassificationRequest(
-                user_input=request.message,
-                existing_state=classification_state,
-                session_context={"jurisdiction": request.jurisdiction}
-            )
-            
-            classification_response = await orchestrator_client.send_classification_request(
-                classification_request,
-                orchestrator_headers
-            )
-            
-            logger.info(f"Classification response: status={classification_response.status}, formulation_class={classification_response.formulation_class}")
-            
-            # Update session state with new classification state
-            new_classification_state = {
-                "current_step": classification_response.current_step,
-                "collected_slots": classification_response.collected_slots,
-                "status": classification_response.status
-            }
-            update_session_state(request.session_id, new_classification_state)
-            
-            # If still needs clarification, return the question
-            if classification_response.status == "needs_clarification":
-                return ChatResponse(
-                    message=ChatMessage(
-                        role="assistant",
-                        content=classification_response.clarifying_question,
-                        timestamp=None
-                    ),
-                    citations=[],
-                    confidence="medium",
-                    formulation_class=None,
-                    requires_escalation=False
-                )
-            
-            # Classification complete - proceed to orchestrator query with formulation_class
-            formulation_class = classification_response.formulation_class
-            logger.info(f"Classification completed with formulation_class: {formulation_class}")
-            
-            # Use original query for orchestrator, not the classification answer
-            original_query = classification_sessions[request.session_id].get("original_query", request.message)
-            if original_query:
-                logger.info(f"Using original query for orchestrator: {original_query}")
-                request.message = original_query
-        
-        # If no classification in progress, check if this is a formulation query
-        elif not classification_state and _is_formulation_query(request.message) and formulation_class is None:
-            logger.info("Query appears to be formulation-related, starting classification")
-            
-            # Store original query for later use after classification completes
-            classification_sessions[request.session_id]["original_query"] = request.message
-            
-            # Build headers for orchestrator calls
-            orchestrator_headers = {}
-            if current_user:
-                orchestrator_headers["X-User-ID"] = current_user.get("user_id", "unknown")
-            
-            # Call orchestrator's formulation classifier
-            classification_request = ClassificationRequest(
-                user_input=request.message,
-                existing_state=None,
-                session_context={"jurisdiction": request.jurisdiction}
-            )
-            
-            classification_response = await orchestrator_client.send_classification_request(
-                classification_request,
-                orchestrator_headers
-            )
-            
-            logger.info(f"Classification response: status={classification_response.status}, formulation_class={classification_response.formulation_class}")
-            
-            # Update session state with new classification state
-            new_classification_state = {
-                "current_step": classification_response.current_step,
-                "collected_slots": classification_response.collected_slots,
-                "status": classification_response.status
-            }
-            update_session_state(request.session_id, new_classification_state)
-            
-            # If needs clarification, return the question
-            if classification_response.status == "needs_clarification":
-                return ChatResponse(
-                    message=ChatMessage(
-                        role="assistant",
-                        content=classification_response.clarifying_question,
-                        timestamp=None
-                    ),
-                    citations=[],
-                    confidence="medium",
-                    formulation_class=None,
-                    requires_escalation=False
-                )
-            
-            # Classification complete - use the result
-            formulation_class = classification_response.formulation_class
-            logger.info(f"Classification completed with formulation_class: {formulation_class}")
-            
-            # Use original query for orchestrator, not the classification answer
-            original_query = classification_sessions[request.session_id].get("original_query", request.message)
-            if original_query:
-                logger.info(f"Using original query for orchestrator: {original_query}")
-                request.message = original_query
-        
-        # Map jurisdiction from gateway format to orchestrator format
-        # Gateway: "india"/"international" -> Orchestrator: "in"/"intl"
-        jurisdiction_mapping = {
-            "india": "in",
-            "international": "intl",
-        }
-        orchestrator_jurisdiction = jurisdiction_mapping.get(request.jurisdiction, "in")
-        
-        logger.info(f"Mapped jurisdiction: {request.jurisdiction} -> {orchestrator_jurisdiction}")
-        
-        # Build headers for orchestrator calls
-        orchestrator_headers = {}
-        if current_user:
-            orchestrator_headers["X-User-ID"] = current_user.get("user_id", "unknown")
-        
-        # Build orchestrator query request
-        orchestrator_request = QueryRequest(
-            query=request.message,
-            jurisdiction=orchestrator_jurisdiction,
-            formulation_type=formulation_class,
-            include_citations=True,
-            include_confidence=True
+def _classification_state(response) -> Dict[str, Any]:
+    return {"current_step": response.current_step, "collected_slots": response.collected_slots or {}, "status": response.status}
+
+
+def _is_formulation_query(message: str) -> bool:
+    """Only start the classifier for an apparent product/formulation description."""
+    lower = message.lower().strip()
+    if lower.startswith(("what is", "what are", "when is", "where is", "how is", "how do i register")):
+        return False
+    terms = ("formulation", "ingredient", "product", "medicine", "drug", "cosmetic", "aahar", "nutraceutical")
+    return any(term in lower for term in terms)
+
+
+@router.post("/", response_model=ChatResponse)
+async def chat(request: ChatRequest, http_request: Request, current_user: Optional[dict] = Depends(get_current_user)):
+    """Run classification and grounded retrieval with durable session/audit state."""
+    if request.use_external_llm:
+        raise HTTPException(status_code=403, detail="External model use is unavailable until verified per-session consent is enabled.")
+    if request.jurisdiction == "comparative":
+        raise HTTPException(status_code=422, detail="Comparative mode requires two independently grounded answer sets and is not enabled in this release.")
+
+    repository = getattr(http_request.app.state, "repository", None)
+    if repository is None:
+        raise HTTPException(status_code=503, detail="Persistent session and audit storage is unavailable.")
+
+    user_id = (current_user or {}).get("user_id", "anonymous")
+    session = await repository.get_session(request.session_id) if request.session_id else None
+    if request.session_id and session is None:
+        raise HTTPException(status_code=404, detail="Session not found or has been deleted.")
+    if session and session["jurisdiction"] != request.jurisdiction:
+        raise HTTPException(status_code=409, detail="A session cannot change jurisdiction. Start a new session to preserve separation.")
+    if not session:
+        session_id = str(await repository.create_session(user_id, request.jurisdiction))
+        session = await repository.get_session(session_id)
+    else:
+        session_id = str(session["session_id"])
+
+    headers = {"X-User-ID": user_id, "X-Session-ID": session_id}
+    classification = session.get("classification_state")
+    formulation_class = None
+
+    if classification and classification.get("status") == "needs_clarification":
+        classified = await orchestrator_client.send_classification_request(
+            ClassificationRequest(user_input=request.message, existing_state=classification, session_context={"jurisdiction": request.jurisdiction}), headers
         )
-        
-        logger.info(f"Sending orchestrator request: {orchestrator_request.dict()}")
-        
-        # Send to orchestrator
-        orchestrator_response = await orchestrator_client.send_query_request(
-            orchestrator_request,
-            orchestrator_headers
+        await repository.update_classification_state(session_id, _classification_state(classified))
+        if classified.status == "needs_clarification":
+            await repository.log_audit(session_id, request.message, [], "formulation_classifier", "self_hosted", "not_applicable", 1.0)
+            return ChatResponse(message=ChatMessage(role="assistant", content=classified.clarifying_question or "Please provide the requested formulation detail."), citations=[], confidence="medium", session_id=session_id)
+        formulation_class = classified.formulation_class
+        message_for_query = session.get("original_query") or request.message
+        await repository.update_classification_state(session_id, None)
+    elif not classification and _is_formulation_query(request.message):
+        classified = await orchestrator_client.send_classification_request(
+            ClassificationRequest(user_input=request.message, session_context={"jurisdiction": request.jurisdiction}), headers
         )
-        
-        logger.info(f"Received orchestrator response: confidence={orchestrator_response.confidence_score}")
-        
-        # Map confidence score to string
-        confidence_map = {
-            "high": 0.8,
-            "medium": 0.5,
-            "low": 0.0
-        }
-        confidence_str = "medium"
-        if orchestrator_response.confidence_score and orchestrator_response.confidence_score >= 0.8:
-            confidence_str = "high"
-        elif orchestrator_response.confidence_score and orchestrator_response.confidence_score < 0.5:
-            confidence_str = "low"
-        
-        return ChatResponse(
-            message=ChatMessage(
-                role="assistant",
-                content=orchestrator_response.answer,
-                timestamp=None
-            ),
-            citations=orchestrator_response.citations,
-            confidence=confidence_str,
-            formulation_class=orchestrator_response.formulation_type,
-            requires_escalation=False
-        )
-        
-    except Exception as e:
-        logger.error(f"Error processing chat request: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error processing chat request"
-        )
+        await repository.update_classification_state(session_id, _classification_state(classified), original_query=request.message)
+        if classified.status == "needs_clarification":
+            await repository.log_audit(session_id, request.message, [], "formulation_classifier", "self_hosted", "not_applicable", 1.0)
+            return ChatResponse(message=ChatMessage(role="assistant", content=classified.clarifying_question or "Please provide the requested formulation detail."), citations=[], confidence="medium", session_id=session_id)
+        formulation_class = classified.formulation_class
+        message_for_query = request.message
+        await repository.update_classification_state(session_id, None)
+    else:
+        message_for_query = request.message
+
+    orchestrator_response = await orchestrator_client.send_query_request(
+        QueryRequest(query=message_for_query, jurisdiction="in" if request.jurisdiction == "india" else "intl", formulation_type=formulation_class), headers
+    )
+    score = orchestrator_response.confidence_score or 0.0
+    confidence: Literal["low", "medium", "high"] = "high" if score >= 0.8 else "medium" if score >= 0.5 else "low"
+    chunk_ids = sorted({citation.get("chunk_id") for citation in orchestrator_response.citations if citation.get("chunk_id")})
+    versions = sorted({citation.get("version_hash") for citation in orchestrator_response.citations if citation.get("version_hash")})
+    await repository.log_audit(
+        session_id=session_id, query=message_for_query, retrieved_chunk_ids=chunk_ids,
+        model_version=orchestrator_response.model_used, provider_used=orchestrator_response.provider_used,
+        corpus_version="|".join(versions) or "no_cited_corpus_version", confidence_score=score,
+    )
+    return ChatResponse(
+        message=ChatMessage(role="assistant", content=orchestrator_response.answer), citations=orchestrator_response.citations,
+        confidence=confidence, formulation_class=orchestrator_response.formulation_type,
+        requires_escalation=confidence == "low", session_id=session_id,
+    )
+
 
 @router.get("/sessions/{session_id}")
-async def get_session(
-    session_id: str,
-    current_user: dict = Depends(verify_token)
-):
-    """
-    Get session history and context
-    """
-    # TODO: Implement session retrieval from PostgreSQL
-    return {
-        "session_id": session_id,
-        "messages": [],
-        "jurisdiction": "india",
-        "formulation_class": None,
-        "created_at": None
-    }
+async def get_session(session_id: str, http_request: Request, current_user: dict = Depends(verify_token)):
+    session = await http_request.app.state.repository.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
 
-@router.delete("/sessions/{session_id}")
-async def delete_session(
-    session_id: str,
-    current_user: dict = Depends(verify_token)
-):
-    """
-    Delete session and associated data (right to erasure)
-    """
-    # TODO: Implement session deletion with audit logging
-    return {"status": "deleted", "session_id": session_id}
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_session(session_id: str, http_request: Request, current_user: dict = Depends(verify_token)):
+    await http_request.app.state.repository.soft_delete_session(session_id)

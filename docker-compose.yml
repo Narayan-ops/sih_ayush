@@ -1,14 +1,12 @@
-version: "3.8"
-
 services:
   postgres:
     image: postgres:16
     container_name: ip-sakti-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: ip_sakti
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ip_sakti}
     ports:
       - "5432:5432"
     volumes:
@@ -53,8 +51,8 @@ services:
     container_name: ip-sakti-minio
     restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
     command: server /data --console-address ":9001"
     ports:
       - "9000:9000"
@@ -73,8 +71,5 @@ volumes:
   es_data:
   minio_data:
 
-# NOT included, by design (see HANDOFF.md):
-# - Keycloak (ADR-007) — auth is stubbed/bypassed for local demo, not needed to prove RAG+citation flow
-# - Neo4j — Phase 2 (Knowledge Graph), not MVP scope
-# - vLLM — replaced by Ollama running natively on host (localhost:11434), not containerized,
-#   so it can use your GPU directly without Docker GPU passthrough complexity
+# Application services are deployed through Kubernetes manifests. Do not expose
+# this local compose stack directly to an untrusted network.

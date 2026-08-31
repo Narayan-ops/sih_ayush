@@ -8,6 +8,7 @@ from fastapi import Security, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, List
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class Role:
     REVIEWER = "reviewer"
 
 # Mock user data (replace with actual Keycloak integration)
+DEV_AUTH_ENABLED = os.getenv("DEV_AUTH_ENABLED", "false").lower() == "true"
 MOCK_USERS = {
     "test_token": {
         "user_id": "test_user_001",
@@ -38,12 +40,12 @@ async def verify_token(
     """
     token = credentials.credentials
     
-    # Mock implementation - replace with actual Keycloak validation
-    if token in MOCK_USERS:
+    # Development tokens are deliberately opt-in.  They must never make a
+    # deployed gateway accept a known credential.
+    if DEV_AUTH_ENABLED and token in MOCK_USERS:
         return MOCK_USERS[token]
     
-    # For development, allow test tokens
-    if token == "dev_test_token":
+    if DEV_AUTH_ENABLED and token == "dev_test_token":
         return {
             "user_id": "dev_user",
             "roles": [Role.ADMIN],

@@ -4,6 +4,7 @@ Handles database operations for sessions, consent, audit, and roles
 """
 
 import logging
+import json
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import asyncpg
@@ -70,6 +71,31 @@ class DatabaseRepository:
                 datetime.utcnow()
             )
         return session_id
+
+    async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a live session; deleted sessions are never returned."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT session_id, user_id, jurisdiction, provider, classification_state, original_query, created_at "
+                "FROM sessions WHERE session_id = $1::uuid AND deleted_at IS NULL", session_id
+            )
+        return dict(row) if row else None
+
+    async def update_classification_state(self, session_id: str, state: Optional[Dict[str, Any]], original_query: Optional[str] = None):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE sessions SET classification_state=$2::jsonb, original_query=COALESCE($3, original_query), updated_at=now() "
+                "WHERE session_id=$1::uuid AND deleted_at IS NULL",
+                session_id, json.dumps(state) if state is not None else None, original_query
+            )
+
+    async def soft_delete_session(self, session_id: str):
+        """Erases live session content while preserving required immutable audit events."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE sessions SET classification_state=NULL, original_query=NULL, deleted_at=now(), updated_at=now() "
+                "WHERE session_id=$1::uuid", session_id
+            )
 
     async def log_consent(
         self,
@@ -138,7 +164,7 @@ class DatabaseRepository:
                 """,
                 session_id,
                 query,
-                retrieved_chunk_ids,
+                json.dumps(retrieved_chunk_ids),
                 model_version,
                 provider_used,
                 corpus_version,

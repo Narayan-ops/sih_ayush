@@ -5,9 +5,8 @@
 
 export interface ChatRequest {
   message: string;
-  jurisdiction: 'india' | 'international' | 'comparative';
-  provider?: string;
-  provider_consent?: boolean;
+  jurisdiction: 'india' | 'international';
+  session_id?: string;
 }
 
 export interface ChatResponse {
@@ -20,6 +19,7 @@ export interface ChatResponse {
   confidence: "low" | "medium" | "high";
   formulation_class: string | null;
   requires_escalation: boolean;
+  session_id: string;
 }
 
 export interface Citation {
@@ -50,7 +50,8 @@ export class ApiService {
     });
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.statusText}`);
+      const detail = await response.json().catch(() => null);
+      throw new Error(detail?.detail || `API error: ${response.statusText}`);
     }
 
     return response.json();

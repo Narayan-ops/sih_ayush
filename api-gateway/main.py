@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.routes import chat, health
+from src.services.database_repository import DatabaseRepository
+from config.settings import settings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -33,7 +35,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React frontend
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,9 +46,14 @@ app.add_middleware(
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("IP-SAKTI Sahayak API Gateway starting up...")
-    yield
-    # Shutdown
-    logger.info("IP-SAKTI Sahayak API Gateway shutting down...")
+    repository = DatabaseRepository(settings.database_url)
+    await repository.initialize()
+    app.state.repository = repository
+    try:
+        yield
+    finally:
+        await repository.close()
+        logger.info("IP-SAKTI Sahayak API Gateway shutting down...")
 
 app.router.lifespan_context = lifespan
 
@@ -75,19 +82,18 @@ async def root():
         "description": "Backend for Frontend (BFF) for IP-SAKTI Sahayak"
     }
 
-# Placeholder routes (to be implemented)
 @app.get("/api/v1/status")
 @limiter.limit("100/minute")
 async def get_system_status(request: Request):
     """Get system status"""
     return {
-        "status": "development",
-        "phase": "MVP",
+        "status": "operational",
+        "phase": "grounded-retrieval",
         "components": {
             "api_gateway": "operational",
-            "orchestrator": "pending",
-            "retrieval": "pending",
-            "classification": "pending"
+            "orchestrator": "configured",
+            "retrieval": "configured",
+            "classification": "configured"
         }
     }
 

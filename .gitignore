@@ -55,6 +55,8 @@ data/corpus/*
 
 # Keep structure but ignore data content
 !data/.gitkeep
+!data/relational-store/
+!data/relational-store/schema.sql
 
 # Logs
 logs/
