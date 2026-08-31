@@ -116,19 +116,15 @@ class ClaimExtractor:
         sentence_lower = sentence.lower().strip()
         
         # Phrases that don't require citation
+        # Only a deliberately controlled disclaimer/welcome line can bypass
+        # citation mapping.  Broad substring exceptions (for example "you
+        # should") let substantive, and potentially advisory, claims escape
+        # the grounding gate.
         non_citable_phrases = [
-            'this is not legal advice',
-            'please consult',
-            'i cannot provide',
-            'i am an ai assistant',
-            'here is information',
-            'based on the documents',
-            'based on the context',
-            'according to',
-            'note that',
-            'important to note',
-            'you should',
-            'it is recommended'
+            'this information is not legal advice.',
+            'this is not legal advice.',
+            'i cannot provide a confident answer based on the available corpus.',
+            'hello there.'
         ]
         
         # Check if it's a non-citable phrase
@@ -136,16 +132,7 @@ class ClaimExtractor:
             if phrase in sentence_lower:
                 return False
         
-        # Check if it's purely transitional
-        if len(sentence_lower) < 10:
-            return False
-        
-        # Check if it's a question
-        if sentence.strip().endswith('?'):
-            return False
-        
-        # Default: requires citation
-        return True
+        return False if sentence_lower in non_citable_phrases else True
 
     def extract_key_claims(self, text: str, max_claims: int = 5) -> List[Claim]:
         """

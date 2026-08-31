@@ -12,14 +12,6 @@ interface Message {
   timestamp: Date;
 }
 
-interface Citation {
-  source_id: string;
-  section: string;
-  article: string;
-  version_hash: string;
-  confidence: number;
-}
-
 interface ChatInterfaceProps {
   onSendMessage: (message: string, jurisdiction: string) => Promise<any>;
   jurisdiction: string;

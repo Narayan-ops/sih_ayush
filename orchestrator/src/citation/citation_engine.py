@@ -98,7 +98,7 @@ class CitationEngine:
             confidence_scorer: Confidence scorer instance
         """
         self.claim_extractor = claim_extractor or ClaimExtractor()
-        self.citation_mapper = citation_mapper or CitationMapper(similarity_threshold=0.3)
+        self.citation_mapper = citation_mapper or CitationMapper()
         self.confidence_scorer = confidence_scorer or ConfidenceScorer()
         
         logger.info("CitationEngine initialized")
@@ -122,36 +122,9 @@ class CitationEngine:
         """
         logger.info("Processing response through citation pipeline")
         
-        # Check if this is a pure negative assertion (no information available)
-        # These should not require citation confidence scoring
-        if is_pure_negative_assertion(generated_text):
-            logger.info("Pure negative assertion detected, skipping citation confidence scoring")
-            # Still extract claims for consistency, but set high confidence
-            claims = self.claim_extractor.extract_claims(generated_text)
-            logger.info(f"Extracted {len(claims)} claims from negative assertion")
-            
-            # Return result with high confidence (negative assertions are safe)
-            return {
-                'claims': claims,
-                'citation_mappings': [],
-                'confidence_score': ConfidenceScore(
-                    overall_confidence=0.8,
-                    retrieval_confidence=1.0,
-                    citation_confidence=1.0,
-                    should_abstain=False,
-                    reason="Negative assertion - no information available in context"
-                ),
-                'mapping_validation': {
-                    'total_claims': len(claims),
-                    'supported_claims': len(claims),
-                    'unsupported_claims': 0,
-                    'unsupported_claim_ids': [],
-                    'is_complete': True,
-                    'should_reject': False
-                },
-                'should_reject': False,
-                'reject_reason': None
-            }
+        # A model-generated statement that something is absent is still a
+        # factual assertion.  It must be grounded like every other answer;
+        # otherwise the caller emits the fixed safe-abstention wrapper.
         
         # Step 1: Extract claims
         claims = self.claim_extractor.extract_claims(generated_text)

@@ -4,8 +4,8 @@ Handles chat/conversation endpoints for the IP-SAKTI Sahayak interface
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any, Literal
 import logging
 import time
 import uuid
@@ -69,8 +69,8 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     """Chat request model"""
-    message: str  # Simplified to single message for MVP
-    jurisdiction: str = "india"  # "india", "international", or "comparative"
+    message: str = Field(min_length=1, max_length=5000)
+    jurisdiction: Literal["india", "international", "comparative"] = "india"
     session_id: Optional[str] = None
     use_external_llm: bool = False
     classification_state: Optional[Dict[str, Any]] = None  # For multi-turn classification
@@ -98,10 +98,22 @@ async def chat(
     try:
         logger.info(f"Received chat request: message='{request.message}', jurisdiction='{request.jurisdiction}', session_id='{request.session_id}'")
         
-        # Check consent if external LLM is requested
+        # Do not silently ignore an external-model request.  The durable
+        # consent/audit flow is not yet connected, so fail closed.
         if request.use_external_llm:
-            # TODO: Implement proper request object for consent check
-            logger.warning(f"External LLM requested for session {request.session_id}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="External LLM use requires the verified, logged consent flow, which is not enabled in this deployment."
+            )
+
+        # Comparative mode must never be silently mapped to one namespace. The
+        # current response contract has one answer/citation set, so it cannot
+        # faithfully render the required two independent columns yet.
+        if request.jurisdiction == "comparative":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Comparative mode is temporarily unavailable; select India or International for a structurally isolated answer."
+            )
         
         # Generate session_id if not provided
         if not request.session_id:
@@ -237,7 +249,6 @@ async def chat(
         jurisdiction_mapping = {
             "india": "in",
             "international": "intl",
-            "comparative": "in"  # Default to India for comparative
         }
         orchestrator_jurisdiction = jurisdiction_mapping.get(request.jurisdiction, "in")
         

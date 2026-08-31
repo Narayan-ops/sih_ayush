@@ -36,21 +36,14 @@ export const JurisdictionToggle: React.FC<JurisdictionToggleProps> = ({
           International
         </button>
         <button
-          className={`toggle-button ${jurisdiction === 'comparative' ? 'active' : ''}`}
-          onClick={() => onJurisdictionChange('comparative')}
-          aria-label="Comparative mode (both jurisdictions)"
+          className="toggle-button"
+          disabled
+          title="Comparative answers require two independently grounded answer sets; this view is not enabled yet."
+          aria-label="Comparative mode is not yet available"
         >
-          Comparative
+          Comparative (coming soon)
         </button>
       </div>
-      {jurisdiction === 'comparative' && (
-        <div className="comparative-notice">
-          <p>
-            <strong>Comparative Mode:</strong> Results from both India and International 
-            jurisdictions will be displayed side-by-side for comparison.
-          </p>
-        </div>
-      )}
     </div>
   );
 };

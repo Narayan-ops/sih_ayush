@@ -4,6 +4,7 @@ Per AGENTS.md constraint #1: Every sentence must map to a retrieved chunk
 """
 
 import logging
+import re
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from .claim_extractor import Claim
@@ -45,7 +46,7 @@ class CitationMapper:
     This mapper ensures unmapped sentences are rejected
     """
 
-    def __init__(self, similarity_threshold: float = 0.6):
+    def __init__(self, similarity_threshold: float = 0.55):
         """
         Initialize citation mapper
         
@@ -123,19 +124,33 @@ class CitationMapper:
         
         for chunk in retrieved_chunks:
             # Handle both dict and object chunks
-            chunk_content = chunk.content if hasattr(chunk, 'content') else chunk.get('content', '') if isinstance(chunk, dict) else chunk.get('text', '')
-            chunk_id = chunk.chunk_id if hasattr(chunk, 'chunk_id') else chunk.get('chunk_id', '')
-            source_id = chunk.source_id if hasattr(chunk, 'source_id') else chunk.get('source_id', '')
-            section = chunk.section if hasattr(chunk, 'section') else chunk.get('section', '')
-            article = chunk.article if hasattr(chunk, 'article') else chunk.get('article', '')
-            version_hash = chunk.version_hash if hasattr(chunk, 'version_hash') else chunk.get('version_hash', '')
-            metadata = chunk.metadata if hasattr(chunk, 'metadata') else chunk.get('metadata', {})
-            clause = chunk.clause if hasattr(chunk, 'clause') else chunk.get('clause', '') if isinstance(chunk, dict) else metadata.get('clause', '')
+            def value(name: str, default=""):
+                if isinstance(chunk, dict):
+                    return chunk.get(name, default)
+                return getattr(chunk, name, default)
+
+            chunk_content = value('content') or value('text')
+            chunk_id = value('chunk_id')
+            source_id = value('source_id')
+            section = value('section')
+            article = value('article')
+            version_hash = value('version_hash')
+            metadata = value('metadata', {}) or {}
+            clause = value('clause') or metadata.get('clause', '')
             
-            # Calculate similarity between claim and chunk
+            # A citation is only usable when its provenance is complete.  Do not
+            # let a partially-ingested chunk satisfy the grounding gate.
+            if not all([chunk_id, source_id, version_hash]) or not (section or article or clause):
+                logger.warning("Skipping chunk with incomplete citation provenance: %s", chunk_id)
+                continue
+
+            # Calculate a directional support score.  Jaccard over an entire
+            # statute section penalises faithful paraphrases simply because the
+            # section contains additional words.  Claim coverage measures how
+            # much of the answer is actually grounded in the source.
             similarity = self._calculate_similarity(claim.text, chunk_content)
             
-            logger.info(f"CitationMapper: claim_id={claim.claim_id}, chunk_id={chunk_id[:8] if chunk_id else 'N/A'}..., similarity={similarity:.4f}, method=Jaccard_word_overlap, threshold={self.similarity_threshold}")
+            logger.info(f"CitationMapper: claim_id={claim.claim_id}, chunk_id={chunk_id[:8] if chunk_id else 'N/A'}..., similarity={similarity:.4f}, method=directional_claim_coverage, threshold={self.similarity_threshold}")
             logger.info(f"  Claim text: '{claim.text[:100]}...'")
             logger.info(f"  Chunk text: '{chunk_content[:100]}...'")
             
@@ -176,23 +191,35 @@ class CitationMapper:
         Returns:
             Similarity score between 0 and 1
         """
-        # Simple word overlap
-        words1 = set(text1.lower().split())
-        words2 = set(text2.lower().split())
+        words1 = set(self._tokenize(text1))
+        words2 = set(self._tokenize(text2))
         
         if not words1 or not words2:
             return 0.0
         
         intersection = words1.intersection(words2)
-        union = words1.union(words2)
-        
-        jaccard = len(intersection) / len(union)
-        
-        # Boost for exact phrase matches
-        if text1.lower() in text2.lower() or text2.lower() in text1.lower():
-            jaccard = min(jaccard * 1.5, 1.0)
-        
-        return jaccard
+        claim_coverage = len(intersection) / len(words1)
+        jaccard = len(intersection) / len(words1.union(words2))
+
+        # Legal identifiers and numbers must be preserved exactly.  A chunk
+        # cannot support an answer which introduces a section, article, year or
+        # numbered requirement absent from that source.
+        claim_identifiers = set(re.findall(r"\b\d+(?:\s*\([a-z]\))?(?:\.\d+)?\b", text1.lower()))
+        chunk_identifiers = set(re.findall(r"\b\d+(?:\s*\([a-z]\))?(?:\.\d+)?\b", text2.lower()))
+        if claim_identifiers and not claim_identifiers.issubset(chunk_identifiers):
+            return 0.0
+
+        # Exact containment is strong evidence; otherwise retain a small
+        # Jaccard component so generic wording cannot pass on one keyword.
+        if " ".join(self._tokenize(text1)) in " ".join(self._tokenize(text2)):
+            return 1.0
+        return (claim_coverage * 0.85) + (jaccard * 0.15)
+
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
+        """Normalise punctuation and remove non-substantive words."""
+        stop_words = {"the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "to", "of", "and", "or", "for", "in", "on", "by", "with", "that", "this", "it", "as", "at", "from"}
+        return [word for word in re.findall(r"[a-z0-9]+(?:\([a-z]\))?", text.lower()) if word not in stop_words]
 
     def _find_span_match(self, claim: str, chunk: str) -> Optional[str]:
         """
@@ -289,9 +316,10 @@ class CitationMapper:
         best = mapping.citations[0]
         
         # Use clause if available, otherwise use article
-        section_info = best.clause if best.clause else best.article
+        section_info = best.clause or best.article
         source_part = f"{best.source_id}, " if best.source_id else ""
-        citation_text = f"[{source_part}Section {best.section}, Clause {section_info}]"
+        locator_label = "Clause" if best.clause else "Article"
+        citation_text = f"[{source_part}Section {best.section}, {locator_label} {section_info}]"
         
         if best.span_match:
             citation_text += f" - \"{best.span_match[:100]}...\""

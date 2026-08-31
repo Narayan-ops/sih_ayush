@@ -5,7 +5,7 @@ Main entry point for the orchestrator service
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 import logging
 import os
 from dotenv import load_dotenv
@@ -41,7 +41,7 @@ default_provider = os.getenv("LLM_DEFAULT_PROVIDER", "self_hosted")
 class QueryRequest(BaseModel):
     """Request model for query endpoint"""
     query: str
-    jurisdiction: str = "in"  # "in" for India, "intl" for International
+    jurisdiction: Literal["in", "intl"] = "in"
     formulation_type: Optional[str] = None
     provider: Optional[str] = None  # Override default LLM provider
     include_citations: bool = True
@@ -57,6 +57,14 @@ class QueryResponse(BaseModel):
     jurisdiction: str
     model_used: str
     provider_used: str
+
+
+INFORMATION_DISCLAIMER = "Information only — not legal advice. For a filing, legal opinion, or case-specific decision, consult a qualified IP professional or AYUSH facilitator."
+
+
+def _with_disclaimer(answer: str) -> str:
+    """Apply the non-removable server-side legal-information wrapper."""
+    return f"{INFORMATION_DISCLAIMER}\n\n{answer}"
 
 
 class ClassificationRequest(BaseModel):
@@ -222,6 +230,16 @@ async def query(request: QueryRequest):
     """
     try:
         logger.info(f"Received query: {request.query[:100]}... (jurisdiction: {request.jurisdiction})")
+
+        # The orchestrator is deliberately unable to route data to an external
+        # model on its own.  A future gateway flow may enable it only after a
+        # durable, per-session consent record is verified and audited.
+        requested_provider = request.provider or default_provider
+        if requested_provider != "self_hosted":
+            raise HTTPException(
+                status_code=403,
+                detail="External model use is disabled until verified, logged session consent is available."
+            )
         
         # Step 1: Classify formulation type
         # Use provided formulation_type if available (from gateway multi-turn classification)
@@ -537,7 +555,7 @@ async def query(request: QueryRequest):
         if not retrieval_results:
             logger.warning("No retrieval results found - returning abstention response")
             return QueryResponse(
-                answer="I could not find relevant information in the corpus to answer your question. This may be because the topic is outside the current scope, or the specific information is not available in the indexed documents. Please try rephrasing your question or contact the appropriate regulatory authority directly.",
+                answer=_with_disclaimer("I cannot provide a confident answer based on the available corpus. Please rephrase the question or use a human facilitator."),
                 citations=[],
                 confidence_score=0.0,
                 formulation_type=formulation_type,
@@ -568,7 +586,7 @@ async def query(request: QueryRequest):
             logger.info(f"  After dedup {i}: chunk_id={chunk_id[:8] if chunk_id != 'N/A' else 'N/A'}..., clause={clause}")
         
         # Step 4: Generate answer using LLM provider
-        provider_name = request.provider or default_provider
+        provider_name = requested_provider
         llm_provider = llm_config.get_provider(provider_name)
         
         # Build context from retrieved documents with clause/section metadata
@@ -628,7 +646,7 @@ async def query(request: QueryRequest):
                 citation_result['confidence_score']
             )
             return QueryResponse(
-                answer=abstention_message,
+                answer=_with_disclaimer(abstention_message),
                 citations=[],
                 confidence_score=citation_result['confidence_score'].overall_confidence,
                 formulation_type=formulation_type,
@@ -649,21 +667,36 @@ async def query(request: QueryRequest):
             if mapping.is_supported and mapping.citations:
                 for citation in mapping.citations:
                     citations_list.append({
+                        "chunk_id": citation.chunk_id,
                         "source_id": citation.source_id,
                         "section": citation.section,
                         "article": citation.article,
+                        "clause": citation.clause,
+                        "version_hash": citation.version_hash,
                         "confidence": citation.confidence
                     })
         
         # Step 9: Pass 2 rewrite for plain-language clarity
-        final_answer = await rewrite_pass2(
+        rewritten_answer = await rewrite_pass2(
             original_answer=final_answer,
             user_query=request.query,
             llm_provider=llm_provider
         )
+
+        # Re-validate the rewrite. Entity checks alone cannot prove that a
+        # paraphrase remains supported by the same retrieved source spans.
+        if rewritten_answer != final_answer:
+            rewrite_citation_result = citation_engine.process_response(
+                generated_text=rewritten_answer,
+                retrieved_chunks=retrieved_chunks
+            )
+            if rewrite_citation_result['should_reject']:
+                logger.warning("Pass 2 rewrite failed the citation gate; using first-pass answer")
+            else:
+                final_answer = rewritten_answer
         
         return QueryResponse(
-            answer=final_answer,
+            answer=_with_disclaimer(final_answer),
             citations=citations_list,
             confidence_score=citation_result['confidence_score'].overall_confidence,
             formulation_type=formulation_type,
