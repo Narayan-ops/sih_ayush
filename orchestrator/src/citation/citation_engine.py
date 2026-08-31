@@ -4,12 +4,75 @@ Per AGENTS.md constraint #1: No answer without citable source
 """
 
 import logging
+import re
 from typing import List, Dict, Optional
 from .claim_extractor import ClaimExtractor, Claim
 from .citation_mapper import CitationMapper, CitationMapping
 from .confidence_scorer import ConfidenceScorer, ConfidenceScore
 
 logger = logging.getLogger(__name__)
+
+
+def is_pure_negative_assertion(text: str) -> bool:
+    """
+    Detect if the entire response is a negative assertion (no information available).
+    These should not require citation confidence scoring.
+    
+    Only returns True if EVERY sentence in the response matches a negative pattern,
+    not just a fragment. This prevents mixed responses from slipping through.
+    
+    Args:
+        text: The generated response text
+        
+    Returns:
+        True if the entire response is a negative assertion, False otherwise
+    """
+    # Negative assertion patterns
+    negative_patterns = [
+        r'no information',
+        r'not (?:found|available|mentioned|provided)',
+        r'(?i)there is no (?:information|data|content)',
+        r'(?i)cannot (?:provide|answer|find)',
+        r'(?i)not (?:in|found in) (?:the|this) (?:context|documents|provided)',
+    ]
+    
+    # Affirmative claim patterns that indicate the sentence is NOT a pure negative assertion
+    affirmative_patterns = [
+        r'\b(?:probably|likely|maybe|possibly|certainly|definitely)\b',
+        r'\b(?:is|are|was|were)\s+(?:true|false|correct|wrong)\b',
+        r'\b(?:should|must|can|will)\b',
+        r'\b(?:however|therefore|thus|so)\b',  # Transition words that introduce new claims
+    ]
+    
+    # Split text into sentences
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    if not sentences:
+        return False
+    
+    # Check if EVERY sentence matches a negative pattern AND has no affirmative patterns
+    for sentence in sentences:
+        # First check for affirmative patterns (disqualify immediately if found)
+        for pattern in affirmative_patterns:
+            if re.search(pattern, sentence, re.IGNORECASE):
+                logger.info(f"Sentence contains affirmative pattern: '{sentence[:50]}...'")
+                return False
+        
+        # Then check if it matches a negative pattern
+        sentence_matches_negative = False
+        for pattern in negative_patterns:
+            if re.search(pattern, sentence, re.IGNORECASE):
+                sentence_matches_negative = True
+                break
+        
+        if not sentence_matches_negative:
+            # At least one sentence is not a negative assertion
+            logger.info(f"Sentence not matching negative pattern: '{sentence[:50]}...'")
+            return False
+    
+    logger.info("All sentences match negative assertion patterns with no affirmative claims")
+    return True
 
 
 class CitationEngine:
@@ -58,6 +121,37 @@ class CitationEngine:
             Dictionary with citations, confidence, and recommendation
         """
         logger.info("Processing response through citation pipeline")
+        
+        # Check if this is a pure negative assertion (no information available)
+        # These should not require citation confidence scoring
+        if is_pure_negative_assertion(generated_text):
+            logger.info("Pure negative assertion detected, skipping citation confidence scoring")
+            # Still extract claims for consistency, but set high confidence
+            claims = self.claim_extractor.extract_claims(generated_text)
+            logger.info(f"Extracted {len(claims)} claims from negative assertion")
+            
+            # Return result with high confidence (negative assertions are safe)
+            return {
+                'claims': claims,
+                'citation_mappings': [],
+                'confidence_score': ConfidenceScore(
+                    overall_confidence=0.8,
+                    retrieval_confidence=1.0,
+                    citation_confidence=1.0,
+                    should_abstain=False,
+                    reason="Negative assertion - no information available in context"
+                ),
+                'mapping_validation': {
+                    'total_claims': len(claims),
+                    'supported_claims': len(claims),
+                    'unsupported_claims': 0,
+                    'unsupported_claim_ids': [],
+                    'is_complete': True,
+                    'should_reject': False
+                },
+                'should_reject': False,
+                'reject_reason': None
+            }
         
         # Step 1: Extract claims
         claims = self.claim_extractor.extract_claims(generated_text)

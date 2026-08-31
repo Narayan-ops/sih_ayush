@@ -176,7 +176,9 @@ REWRITE INSTRUCTIONS:
 Rewritten answer:"""
     
     try:
-        rewrite_response = await llm_provider.generate(rewrite_prompt)
+        # Pass 2 needs its own token budget since it's rewriting generated text
+        pass2_max_tokens = min(2048, llm_provider.max_tokens)  # Conservative budget for rewrites
+        rewrite_response = await llm_provider.generate(rewrite_prompt, max_tokens=pass2_max_tokens)
         rewritten_answer = rewrite_response.content
         
         # Safety check: extract entities from rewritten answer
