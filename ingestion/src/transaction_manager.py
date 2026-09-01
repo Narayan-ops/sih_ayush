@@ -1,349 +1,170 @@
-"""
-Dual-Store Transaction Manager
-Ensures atomic writes across Qdrant + Elasticsearch per ADR-008
-Provides rollback on partial failure and consistency verification
+"""Verified, recoverable dual-store ingestion for IP-SAKTI.
+
+Qdrant and Elasticsearch have no shared transaction.  This module therefore
+uses deterministic ids, post-write verification, and compensation that deletes
+only records created by the failed operation. A compensation failure is raised
+as a critical operational error instead of being reported as success.
 """
 
-from typing import List, Dict, Any, Optional
+from __future__ import annotations
+
 import logging
-from datetime import datetime
 import os
-from dotenv import load_dotenv
+import re
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Iterable
 
+from elasticsearch import Elasticsearch, helpers
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
-from elasticsearch import Elasticsearch
+from qdrant_client.models import Distance, PointIdsList, PointStruct, VectorParams
 
 logger = logging.getLogger(__name__)
+_NAME = re.compile(r"^(in|intl)_[a-z0-9_]+$")
 
-# Load environment variables
-load_dotenv()
+
+class DualStoreConsistencyError(RuntimeError):
+    """A write cannot be proven present in both retrieval stores."""
+
+
+@dataclass(frozen=True)
+class IngestionResult:
+    qdrant_points: int
+    elasticsearch_docs: int
+    transaction_id: str
+
 
 class TransactionManager:
-    """
-    Transaction manager for dual-store consistency
-    Per ADR-008: Transactional writes with rollback on partial failure
-    """
-    
-    def __init__(self):
-        self.active_transactions = {}
-        
-        # Initialize Qdrant client
-        qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
-        qdrant_api_key = os.getenv("QDRANT_API_KEY")
-        self.qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
-        
-        # Initialize Elasticsearch client
-        es_url = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
-        es_username = os.getenv("ELASTICSEARCH_USERNAME")
-        es_password = os.getenv("ELASTICSEARCH_PASSWORD")
-        
-        if es_username and es_password:
-            self.elasticsearch_client = Elasticsearch(
-                [es_url],
-                basic_auth=(es_username, es_password)
-            )
-        else:
-            self.elasticsearch_client = Elasticsearch([es_url])
-        
-        logger.info("TransactionManager initialized with Qdrant and Elasticsearch clients")
-    
-    async def begin_transaction(self, transaction_id: str) -> Dict[str, Any]:
-        """
-        Begin a new transaction
-        """
-        transaction = {
-            "transaction_id": transaction_id,
-            "status": "active",
-            "started_at": datetime.utcnow(),
-            "operations": [],
-            "rollback_actions": []
-        }
-        
-        self.active_transactions[transaction_id] = transaction
-        logger.info(f"Transaction {transaction_id} started")
-        
-        return transaction
-    
-    async def commit_transaction(self, transaction_id: str) -> bool:
-        """
-        Commit a transaction
-        """
-        if transaction_id not in self.active_transactions:
-            logger.error(f"Transaction {transaction_id} not found")
-            return False
-        
-        transaction = self.active_transactions[transaction_id]
-        transaction["status"] = "committed"
-        transaction["completed_at"] = datetime.utcnow()
-        
-        logger.info(f"Transaction {transaction_id} committed")
-        return True
-    
-    async def rollback_transaction(self, transaction_id: str) -> bool:
-        """
-        Rollback a transaction
-        Executes rollback actions in reverse order
-        """
-        if transaction_id not in self.active_transactions:
-            logger.error(f"Transaction {transaction_id} not found")
-            return False
-        
-        transaction = self.active_transactions[transaction_id]
-        
-        # Execute rollback actions in reverse order
-        for rollback_action in reversed(transaction["rollback_actions"]):
-            try:
-                await rollback_action()
-                logger.info(f"Executed rollback action for transaction {transaction_id}")
-            except Exception as e:
-                logger.error(f"Rollback action failed: {e}")
-        
-        transaction["status"] = "rolled_back"
-        transaction["completed_at"] = datetime.utcnow()
-        
-        logger.warning(f"Transaction {transaction_id} rolled back")
-        return True
-    
-    async def add_operation(self, transaction_id: str, operation: str, rollback_action: Optional[callable] = None):
-        """
-        Add an operation to the transaction
-        """
-        if transaction_id not in self.active_transactions:
-            logger.error(f"Transaction {transaction_id} not found")
-            return False
-        
-        transaction = self.active_transactions[transaction_id]
-        transaction["operations"].append({
-            "operation": operation,
-            "timestamp": datetime.utcnow()
-        })
-        
-        if rollback_action:
-            transaction["rollback_actions"].append(rollback_action)
-        
-        return True
-    
-    async def verify_consistency(self, transaction_id: str) -> bool:
-        """
-        Verify consistency between Qdrant and Elasticsearch
-        Per ADR-008: Any inconsistency triggers a page-worthy alert
-        """
-        # Placeholder implementation
-        # In production, this would check that all written chunks exist in both stores
-        logger.info(f"Verifying consistency for transaction {transaction_id}")
-        
-        # Mock verification
-        return True
-    
-    async def write_to_both_stores(self, transaction_id: str, chunks: List[Dict[str, Any]]) -> bool:
-        """
-        Write chunks to both Qdrant and Elasticsearch atomically
-        """
-        try:
-            # Begin transaction
-            await self.begin_transaction(transaction_id)
-            
-            # Write to Qdrant (mock)
-            await self._write_to_qdrant(chunks, transaction_id)
-            
-            # Write to Elasticsearch (mock)
-            await self._write_to_elasticsearch(chunks, transaction_id)
-            
-            # Verify consistency
-            if not await self.verify_consistency(transaction_id):
-                await self.rollback_transaction(transaction_id)
-                return False
-            
-            # Commit transaction
-            await self.commit_transaction(transaction_id)
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error in dual-store write: {e}")
-            await self.rollback_transaction(transaction_id)
-            return False
-    
-    async def _write_to_qdrant(self, chunks: List[Dict[str, Any]], transaction_id: str):
-        """
-        Write chunks to Qdrant
-        """
-        # Placeholder implementation
-        logger.info(f"Writing {len(chunks)} chunks to Qdrant for transaction {transaction_id}")
-    
-    async def _write_to_elasticsearch(self, chunks: List[Dict[str, Any]], transaction_id: str):
-        """
-        Write chunks to Elasticsearch
-        """
-        # Placeholder implementation
-        logger.info(f"Writing {len(chunks)} chunks to Elasticsearch for transaction {transaction_id}")
-    
-    async def ingest_chunks(
-        self, 
-        chunks: List[Dict[str, Any]], 
-        corpus_version: str, 
-        jurisdiction: str, 
-        domain: str
-    ) -> tuple[int, int]:
-        """
-        Ingest chunks to both Qdrant and Elasticsearch
-        Returns (qdrant_points, elasticsearch_docs)
-        """
-        transaction_id = f"ingest_{datetime.utcnow().isoformat()}"
-        
-        try:
-            # Begin transaction
-            await self.begin_transaction(transaction_id)
-            
-            # Prepare Qdrant points
-            qdrant_points = []
-            for chunk in chunks:
-                embedding = chunk.get("embedding", [])
-                if not embedding or len(embedding) == 0:
-                    logger.error(f"Chunk missing embedding: chunk_id={chunk.get('metadata', {}).get('chunk_id', 'unknown')}")
-                    logger.error(f"Chunk keys: {chunk.keys()}")
-                    logger.error(f"Chunk structure: {chunk}")
-                    raise ValueError(f"Chunk has no embedding data: {chunk.get('metadata', {}).get('chunk_id', 'unknown')}")
-                
-                logger.info(f"Preparing point with embedding length: {len(embedding)}")
-                
-                point = PointStruct(
-                    id=chunk["metadata"].get("chunk_id", ""),
-                    vector=embedding,
-                    payload={
-                        "content": chunk["content"],
-                        "section": chunk.get("section", ""),
-                        "clause": chunk.get("clause", ""),
-                        "metadata": chunk.get("metadata", {}),
-                        "corpus_version": corpus_version,
-                        "jurisdiction": jurisdiction,
-                        "domain": domain
-                    }
-                )
-                qdrant_points.append(point)
-            
-            # Write to Qdrant
-            collection_name = f"{jurisdiction}_{domain}"
-            self._ensure_qdrant_collection(collection_name)
-            
-            if qdrant_points:
-                self.qdrant_client.upsert(
-                    collection_name=collection_name,
-                    points=qdrant_points
-                )
-            
-            # Write to Elasticsearch
-            es_docs = 0
-            for chunk in chunks:
-                es_doc = {
-                    "content": chunk["content"],
-                    "section": chunk.get("section", ""),
-                    "clause": chunk.get("clause", ""),
-                    "metadata": chunk.get("metadata", {}),
-                    "corpus_version": corpus_version,
-                    "jurisdiction": jurisdiction,
-                    "domain": domain,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-                
-                es_index = f"{jurisdiction}_{domain}"
-                self._ensure_elasticsearch_index(es_index)
-                
-                self.elasticsearch_client.index(index=es_index, document=es_doc)
-                es_docs += 1
-            
-            # Verify consistency
-            if not await self.verify_consistency(transaction_id):
-                await self.rollback_transaction(transaction_id)
-                return 0, 0
-            
-            # Commit transaction
-            await self.commit_transaction(transaction_id)
-            
-            logger.info(f"Successfully ingested {len(qdrant_points)} Qdrant points and {es_docs} Elasticsearch docs")
-            return len(qdrant_points), es_docs
-            
-        except Exception as e:
-            logger.error(f"Error in ingest_chunks: {e}")
-            await self.rollback_transaction(transaction_id)
-            return 0, 0
-    
-    def _ensure_qdrant_collection(self, collection_name: str):
-        """Ensure Qdrant collection exists"""
-        try:
-            collections = self.qdrant_client.get_collections().collections
-            collection_names = [c.name for c in collections]
-            
-            if collection_name not in collection_names:
-                self.qdrant_client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config=VectorParams(size=1024, distance=Distance.COSINE, on_disk=False)
-                )
-                logger.info(f"Created Qdrant collection: {collection_name}")
-        except Exception as e:
-            logger.error(f"Error ensuring Qdrant collection: {e}")
-    
-    def _ensure_elasticsearch_index(self, index_name: str):
-        """Ensure Elasticsearch index exists"""
-        try:
-            if not self.elasticsearch_client.indices.exists(index=index_name):
-                self.elasticsearch_client.indices.create(
-                    index=index_name,
-                    body={
-                        "mappings": {
-                            "properties": {
-                                "content": {"type": "text"},
-                                "section": {"type": "keyword"},
-                                "clause": {"type": "keyword"},
-                                "corpus_version": {"type": "keyword"},
-                                "jurisdiction": {"type": "keyword"},
-                                "domain": {"type": "keyword"},
-                                "timestamp": {"type": "date"}
-                            }
-                        }
-                    }
-                )
-                logger.info(f"Created Elasticsearch index: {index_name}")
-        except Exception as e:
-            logger.error(f"Error ensuring Elasticsearch index: {e}")
-    
-    async def get_corpus_info(self, version: str) -> Dict[str, Any]:
-        """Get information about a specific corpus version"""
-        try:
-            # Get collection info from Qdrant
-            collections = self.qdrant_client.get_collections().collections
-            total_points = sum(c.points_count for c in collections if version in c.name)
-            
-            return {
-                "version": version,
-                "total_points": total_points,
-                "collections": [c.name for c in collections],
-                "status": "active"
-            }
-        except Exception as e:
-            logger.error(f"Error getting corpus info: {e}")
-            return {"version": version, "status": "error", "error": str(e)}
-    
-    def health_check(self) -> Dict[str, bool]:
-        """Health check for transaction manager and its clients"""
-        try:
-            self.qdrant_client.get_collections()
-            qdrant_healthy = True
-        except Exception as e:
-            logger.warning(f"Qdrant health check failed: {e}")
-            qdrant_healthy = False
-        
-        try:
-            es_healthy = self.elasticsearch_client.ping()
-        except Exception as e:
-            logger.warning(f"Elasticsearch health check failed: {e}")
-            es_healthy = False
-        
-        return {
-            "qdrant": qdrant_healthy,
-            "elasticsearch": es_healthy,
-            "transaction_manager": qdrant_healthy and es_healthy
-        }
+    """Write immutable corpus chunks consistently to Qdrant and Elasticsearch."""
 
-# Global transaction manager instance
-transaction_manager = TransactionManager()
+    def __init__(self, qdrant_client: QdrantClient | None = None, elasticsearch_client: Elasticsearch | None = None):
+        self.qdrant_client = qdrant_client or QdrantClient(
+            url=os.getenv("QDRANT_URL", "http://localhost:6333"), api_key=os.getenv("QDRANT_API_KEY")
+        )
+        if elasticsearch_client:
+            self.elasticsearch_client = elasticsearch_client
+        else:
+            endpoint = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
+            username, password = os.getenv("ELASTICSEARCH_USERNAME"), os.getenv("ELASTICSEARCH_PASSWORD")
+            self.elasticsearch_client = Elasticsearch([endpoint], basic_auth=(username, password)) if username and password else Elasticsearch([endpoint])
+
+    @staticmethod
+    def collection_name(jurisdiction: str, domain: str) -> str:
+        prefix = {"india": "in", "in": "in", "international": "intl", "intl": "intl"}.get(jurisdiction.lower())
+        name = f"{prefix}_{domain.lower().replace('-', '_')}" if prefix else ""
+        if not _NAME.fullmatch(name):
+            raise ValueError("jurisdiction must be India/in or International/intl and domain must be a safe identifier")
+        return name
+
+    @staticmethod
+    def _id(chunk: dict[str, Any]) -> str:
+        metadata = chunk["metadata"]
+        value = "|".join(str(metadata[key]) for key in ("source_id", "section", "clause", "version_hash", "chunk_ordinal"))
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, value))
+
+    def _ensure_stores(self, collection: str, dimension: int) -> None:
+        collections = {item.name for item in self.qdrant_client.get_collections().collections}
+        if collection not in collections:
+            self.qdrant_client.create_collection(collection_name=collection, vectors_config=VectorParams(size=dimension, distance=Distance.COSINE, on_disk=True))
+        if not self.elasticsearch_client.indices.exists(index=collection):
+            self.elasticsearch_client.indices.create(index=collection, mappings={"dynamic": "strict", "properties": {
+                "chunk_id": {"type": "keyword"}, "content": {"type": "text"}, "source_id": {"type": "keyword"},
+                "section": {"type": "keyword"}, "clause": {"type": "keyword"}, "version_hash": {"type": "keyword"},
+                "review_status": {"type": "keyword"}, "jurisdiction": {"type": "keyword"}, "domain": {"type": "keyword"},
+                "corpus_version": {"type": "keyword"}, "ingested_at": {"type": "date"}, "metadata": {"type": "object", "enabled": false},
+            }})
+
+    def _existing_qdrant_ids(self, collection: str, ids: list[str]) -> set[str]:
+        return {str(point.id) for point in self.qdrant_client.retrieve(collection_name=collection, ids=ids, with_payload=False, with_vectors=False)}
+
+    def _existing_es_ids(self, collection: str, ids: list[str]) -> set[str]:
+        response = self.elasticsearch_client.mget(index=collection, docs=[{"_id": item} for item in ids])
+        return {item["_id"] for item in response["docs"] if item.get("found")}
+
+    def _delete_qdrant(self, collection: str, ids: Iterable[str]) -> None:
+        values = list(ids)
+        if values:
+            self.qdrant_client.delete(collection_name=collection, points_selector=PointIdsList(points=values), wait=True)
+
+    def _delete_es(self, collection: str, ids: Iterable[str]) -> None:
+        actions = [{"_op_type": "delete", "_index": collection, "_id": item} for item in ids]
+        if actions:
+            helpers.bulk(self.elasticsearch_client, actions, raise_on_error=True, refresh="wait_for")
+
+    def _verify(self, collection: str, ids: list[str]) -> None:
+        wanted = set(ids)
+        qdrant_ids, es_ids = self._existing_qdrant_ids(collection, ids), self._existing_es_ids(collection, ids)
+        if qdrant_ids != wanted or es_ids != wanted:
+            raise DualStoreConsistencyError(
+                f"CRITICAL dual-store inconsistency collection={collection} missing_qdrant={sorted(wanted-qdrant_ids)} missing_elasticsearch={sorted(wanted-es_ids)}"
+            )
+
+    def ingest_chunks(self, chunks: list[dict[str, Any]], corpus_version: str, jurisdiction: str, domain: str) -> IngestionResult:
+        if not chunks:
+            return IngestionResult(0, 0, "empty")
+        collection, transaction_id = self.collection_name(jurisdiction, domain), str(uuid.uuid4())
+        ids = [self._id(chunk) for chunk in chunks]
+        if len(ids) != len(set(ids)):
+            raise ValueError("input contains duplicate deterministic chunk identities")
+        dimensions = {len(chunk.get("embedding", [])) for chunk in chunks}
+        if len(dimensions) != 1 or not next(iter(dimensions)):
+            raise ValueError("each chunk must have a non-empty embedding of the same dimension")
+        for chunk in chunks:
+            metadata = chunk.get("metadata", {})
+            required = ("source_id", "section", "clause", "version_hash", "chunk_ordinal", "review_status")
+            if any(not str(metadata.get(key, "")).strip() for key in required):
+                raise ValueError("every chunk requires source_id, section, clause, version_hash, chunk_ordinal and review_status")
+
+        self._ensure_stores(collection, next(iter(dimensions)))
+        q_before, es_before = self._existing_qdrant_ids(collection, ids), self._existing_es_ids(collection, ids)
+        if q_before != es_before:
+            raise DualStoreConsistencyError(f"CRITICAL pre-existing inconsistency in {collection}; repair before ingesting")
+        new = [(chunk, chunk_id) for chunk, chunk_id in zip(chunks, ids) if chunk_id not in q_before]
+        if not new:
+            self._verify(collection, ids)
+            return IngestionResult(0, 0, transaction_id)
+
+        created_ids, now = [chunk_id for _, chunk_id in new], datetime.now(timezone.utc).isoformat()
+        try:
+            points = [PointStruct(id=chunk_id, vector=chunk["embedding"], payload={
+                "chunk_id": chunk_id, "content": chunk["content"], "source_id": chunk["metadata"]["source_id"],
+                "section": chunk["metadata"]["section"], "clause": chunk["metadata"]["clause"],
+                "version_hash": chunk["metadata"]["version_hash"], "review_status": chunk["metadata"]["review_status"],
+                "jurisdiction": collection.split("_", 1)[0], "domain": domain, "corpus_version": corpus_version, "metadata": chunk["metadata"],
+            }) for chunk, chunk_id in new]
+            self.qdrant_client.upsert(collection_name=collection, points=points, wait=True)
+            actions = [{"_op_type": "create", "_index": collection, "_id": chunk_id, "_source": {
+                "chunk_id": chunk_id, "content": chunk["content"], "source_id": chunk["metadata"]["source_id"],
+                "section": chunk["metadata"]["section"], "clause": chunk["metadata"]["clause"], "version_hash": chunk["metadata"]["version_hash"],
+                "review_status": chunk["metadata"]["review_status"], "jurisdiction": collection.split("_", 1)[0], "domain": domain,
+                "corpus_version": corpus_version, "ingested_at": now, "metadata": chunk["metadata"],
+            }} for chunk, chunk_id in new]
+            helpers.bulk(self.elasticsearch_client, actions, raise_on_error=True, refresh="wait_for")
+            self._verify(collection, ids)
+            logger.info("dual-store transaction committed id=%s collection=%s chunks=%s", transaction_id, collection, len(new))
+            return IngestionResult(len(new), len(new), transaction_id)
+        except Exception as error:
+            rollback_errors: list[str] = []
+            for name, rollback in (("elasticsearch", self._delete_es), ("qdrant", self._delete_qdrant)):
+                try:
+                    rollback(collection, created_ids)
+                except Exception as rollback_error:
+                    rollback_errors.append(f"{name}: {rollback_error}")
+            message = f"dual-store transaction {transaction_id} failed: {error}"
+            if rollback_errors:
+                logger.critical("%s; rollback failures: %s", message, rollback_errors)
+                raise DualStoreConsistencyError(f"{message}; rollback failures: {rollback_errors}") from error
+            logger.error("%s; compensating rollback completed", message)
+            raise
+
+    def health_check(self) -> dict[str, bool]:
+        try:
+            self.qdrant_client.get_collections(); qdrant = True
+        except Exception:
+            qdrant = False
+        try:
+            elasticsearch = bool(self.elasticsearch_client.ping())
+        except Exception:
+            elasticsearch = False
+        return {"qdrant": qdrant, "elasticsearch": elasticsearch, "transaction_manager": qdrant and elasticsearch}

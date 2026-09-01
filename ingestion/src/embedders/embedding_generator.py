@@ -39,29 +39,28 @@ class EmbeddingGenerator:
             logger.error(f"Failed to load embedding model: {e}")
             raise
     
-    def generate_embeddings(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def generate_embeddings(self, chunks: List[Dict[str, Any]], batch_size: int = 32) -> List[Dict[str, Any]]:
         """
         Generate embeddings for a list of chunks using the real BGE model
         """
         if self.model is None:
             raise RuntimeError("Embedding model not loaded")
         
-        embedded_chunks = []
-        
-        for chunk in chunks:
-            content = chunk["content"]
-            
-            # Generate real embedding using BGE model
-            embedding = self.model.encode(content, convert_to_numpy=True)
-            
-            # Add embedding to chunk
-            embedded_chunk = {
-                **chunk,
-                "embedding": embedding.tolist(),
-                "embedding_model": self.model_name,
-                "embedding_dimension": len(embedding)
-            }
-            embedded_chunks.append(embedded_chunk)
+        if not chunks:
+            return []
+        vectors = self.model.encode(
+            [chunk["content"] for chunk in chunks],
+            batch_size=batch_size,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        embedded_chunks = [{
+            **chunk,
+            "embedding": vector.tolist(),
+            "embedding_model": self.model_name,
+            "embedding_dimension": len(vector),
+        } for chunk, vector in zip(chunks, vectors)]
         
         logger.info(f"Generated real embeddings for {len(embedded_chunks)} chunks using {self.model_name}")
         return embedded_chunks

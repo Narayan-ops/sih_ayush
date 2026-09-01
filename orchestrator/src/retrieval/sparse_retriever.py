@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-@dataclass
 class SparseResult:
     """Represents a sparse retrieval result"""
     chunk_id: str
@@ -79,9 +78,9 @@ class SparseRetriever:
         Returns:
             Index name with jurisdiction prefix
         """
-        if jurisdiction.lower() == 'india':
+        if jurisdiction.lower() in {'india', 'in'}:
             prefix = 'in_'
-        elif jurisdiction.lower() == 'international':
+        elif jurisdiction.lower() in {'international', 'intl'}:
             prefix = 'intl_'
         else:
             raise ValueError(f"Invalid jurisdiction: {jurisdiction}. Must be 'india' or 'international'")
@@ -251,7 +250,7 @@ class SparseRetriever:
                         "should": [
                             {
                                 "match_phrase": {
-                                    "text": {
+                                "content": {
                                         "query": query,
                                         "boost": phrase_boost
                                     }
@@ -260,7 +259,7 @@ class SparseRetriever:
                             {
                                 "multi_match": {
                                     "query": query,
-                                    "fields": ["text", "section", "article"],
+                                    "fields": ["content", "section", "article"],
                                     "type": "best_fields"
                                 }
                             }

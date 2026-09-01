@@ -5,6 +5,7 @@ Handles database operations for sessions, consent, audit, and roles
 
 import logging
 import json
+import uuid
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import asyncpg
@@ -43,7 +44,7 @@ class DatabaseRepository:
 
     async def create_session(
         self,
-        user_id: str,
+        user_id: Optional[str],
         jurisdiction: str,
         provider: str = "self_hosted"
     ) -> str:
@@ -58,6 +59,12 @@ class DatabaseRepository:
         Returns:
             Session ID
         """
+        parsed_user_id = None
+        if user_id:
+            try:
+                parsed_user_id = uuid.UUID(user_id)
+            except ValueError:
+                logger.warning("Non-UUID user identity omitted from database session record")
         async with self.pool.acquire() as conn:
             session_id = await conn.fetchval(
                 """
@@ -65,7 +72,7 @@ class DatabaseRepository:
                 VALUES ($1, $2, $3, $4)
                 RETURNING session_id
                 """,
-                user_id,
+                parsed_user_id,
                 jurisdiction,
                 provider,
                 datetime.utcnow()
@@ -118,12 +125,13 @@ class DatabaseRepository:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO consent_log (session_id, provider, consented, consent_type, timestamp)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO consent_logs (session_id, provider_name, granted, consent_type, scope, timestamp)
+                VALUES ($1::uuid, $2, $3, $4, $5, $6)
                 """,
                 session_id,
                 provider,
                 consented,
+                consent_type,
                 consent_type,
                 datetime.utcnow()
             )
@@ -156,19 +164,21 @@ class DatabaseRepository:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO audit_log (
-                    session_id, query, retrieved_chunk_ids, model_version,
-                    provider_used, corpus_version, confidence_score, timestamp
+                INSERT INTO audit_trail (
+                    session_id, query_text, chunk_ids, model_version,
+                    provider_used, corpus_version, confidence_score, citation_count, metadata, timestamp
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                VALUES ($1::uuid, $2, $3::text[], $4, $5, $6, $7, $8, $9::jsonb, $10)
                 """,
                 session_id,
                 query,
-                json.dumps(retrieved_chunk_ids),
+                retrieved_chunk_ids,
                 model_version,
                 provider_used,
                 corpus_version,
-                confidence_score,
+                f"{confidence_score:.3f}",
+                len(retrieved_chunk_ids),
+                json.dumps({"schema_version": "2026-08-31"}),
                 datetime.utcnow()
             )
         logger.info(f"Audit logged: session={session_id}, provider={provider_used}")

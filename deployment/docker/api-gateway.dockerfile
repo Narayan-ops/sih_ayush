@@ -17,6 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY api-gateway/src/ ./src/
 COPY api-gateway/config/ ./config/
 COPY api-gateway/main.py ./main.py
+COPY data/relational-store/ ./data/relational-store/
+COPY scripts/ ./scripts/
 
 # Expose port
 EXPOSE 8000

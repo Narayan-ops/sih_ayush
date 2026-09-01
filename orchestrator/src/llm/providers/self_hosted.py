@@ -21,8 +21,8 @@ class SelfHostedProvider(LLMProvider):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.base_url = config.get("base_url", "http://localhost:8000")
-        self.model_name = config.get("model_name", "llama3.1:8b")
+        self.base_url = config.get("base_url", "http://localhost:8000").rstrip("/")
+        self.model_name = config.get("model_name", "meta-llama/Llama-3.1-8B-Instruct")
         self.timeout = config.get("timeout", 30)
         self.max_tokens = config.get("max_tokens", 2048)
         self.temperature = config.get("temperature", 0.7)
@@ -116,7 +116,7 @@ class SelfHostedProvider(LLMProvider):
         """
         try:
             async with httpx.AsyncClient(timeout=5) as client:
-                response = await client.get(f"{self.base_url}/api/tags")
+                response = await client.get(f"{self.base_url}/health")
                 return response.status_code == 200
         except Exception as e:
             logger.warning(f"Self-hosted LLM health check failed: {e}")

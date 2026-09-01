@@ -1,0 +1,48 @@
+# Local full-stack overlay. The LLM stays on the host so it can use the GPU.
+# Start with: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: deployment/docker/orchestrator.dockerfile
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      SELF_HOSTED_LLM_URL: http://host.docker.internal:8000
+      SELF_HOSTED_MODEL: ${SELF_HOSTED_MODEL:-meta-llama/Llama-3.1-8B-Instruct}
+      LLM_DEFAULT_PROVIDER: self_hosted
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - "8001:8001"
+    depends_on:
+      qdrant:
+        condition: service_started
+      elasticsearch:
+        condition: service_healthy
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: deployment/docker/api-gateway.dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ip_sakti}
+      ORCHESTRATOR_URL: http://orchestrator:8001
+      CORS_ORIGINS: http://localhost:5173,http://localhost:8080
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      orchestrator:
+        condition: service_started
+
+  client:
+    build:
+      context: .
+      dockerfile: deployment/docker/client.dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      api-gateway:
+        condition: service_started

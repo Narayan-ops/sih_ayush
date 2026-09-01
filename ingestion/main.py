@@ -1,225 +1,99 @@
-"""
-IP-SAKTI Sahayak Ingestion Service
-Main entry point for the ingestion pipeline
+"""Controlled corpus-ingestion API.
+
+This service accepts only structured, review-labelled legal chunks. It never
+scrapes public sources and it never marks content authoritative on its own.
 """
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from __future__ import annotations
+
+import hashlib
 import logging
-import os
-from dotenv import load_dotenv
+from typing import Any, Literal
 
-# Configure logging
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel, Field, field_validator
+
+from src.embedders.embedding_generator import embedding_generator
+from src.transaction_manager import DualStoreConsistencyError, TransactionManager
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Load environment variables
-load_dotenv()
-
-# Import ingestion components
-from src.parsers.statute_parser import statute_parser
-from src.chunkers.legal_chunker import legal_chunker
-from src.embedders.embedding_generator import embedding_generator
-from src.transaction_manager import TransactionManager
-
-app = FastAPI(title="IP-SAKTI Ingestion", version="0.1.0")
-
-# Initialize components
+app = FastAPI(title="IP-SAKTI controlled ingestion", version="1.0.0")
 transaction_manager = TransactionManager()
 
 
+class SourceChunk(BaseModel):
+    text: str = Field(min_length=1, max_length=50_000)
+    section: str = Field(min_length=1, max_length=500)
+    clause: str | None = Field(default=None, max_length=500)
+    source_id: str = Field(min_length=1, max_length=500)
+    citation_label: str | None = Field(default=None, max_length=1_000)
+
+
 class IngestionRequest(BaseModel):
-    """Request model for ingestion endpoint"""
-    data_source: str  # "json" or "raw_text"
-    data: List[Dict[str, Any]]  # Either structured JSON or raw text data
-    metadata: Dict[str, Any]
-    jurisdiction: str = "india"
-    domain: str = "statutes"
+    data: list[SourceChunk] = Field(min_length=1, max_length=10_000)
+    metadata: dict[str, Any]
+    jurisdiction: Literal["in", "india", "intl", "international"]
+    domain: str = Field(pattern=r"^[a-z0-9_]+$")
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        for field in ("source", "source_url", "retrieved_date", "review_status"):
+            if not str(value.get(field, "")).strip():
+                raise ValueError(f"metadata.{field} is required")
+        if value["review_status"] not in {"pending_review", "approved", "rejected"}:
+            raise ValueError("metadata.review_status must be pending_review, approved, or rejected")
+        if value["review_status"] == "rejected":
+            raise ValueError("rejected corpus content cannot be ingested")
+        return value
 
 
 class IngestionResponse(BaseModel):
-    """Response model for ingestion endpoint"""
-    status: str
+    status: Literal["completed"]
     chunks_processed: int
     qdrant_points: int
     elasticsearch_docs: int
     corpus_version: str
-    errors: List[str]
+    transaction_id: str
+
+
+def _normalise(request: IngestionRequest) -> list[dict[str, Any]]:
+    """Create immutable provenance before embeddings are generated."""
+    base = dict(request.metadata)
+    source_id = str(base.get("source_id") or hashlib.sha256(f"{base['source']}|{base['source_url']}".encode()).hexdigest()[:24])
+    prepared: list[dict[str, Any]] = []
+    for ordinal, item in enumerate(request.data):
+        content = item.text.strip()
+        section, clause = item.section.strip(), (item.clause or "not_applicable").strip() or "not_applicable"
+        version_hash = hashlib.sha256((content + "|" + source_id + "|" + section + "|" + clause).encode("utf-8")).hexdigest()
+        prepared.append({
+            "content": content,
+            "metadata": {**base, "source_id": item.source_id.strip() or source_id, "section": section, "clause": clause,
+                         "version_hash": version_hash, "chunk_ordinal": ordinal, "citation_label": item.citation_label or f"{section}, {clause}"},
+        })
+    return embedding_generator.generate_embeddings(prepared)
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint - actually checks component health"""
-    # Check transaction manager (includes Qdrant and Elasticsearch)
-    health_status = transaction_manager.health_check()
-    
-    # Check embedding generator
-    embedding_healthy = True  # Always healthy if initialized
-    
-    # Check parser
-    parser_healthy = True  # Always healthy if initialized
-    
-    # Check chunker
-    chunker_healthy = True  # Always healthy if initialized
-    
-    all_healthy = all([
-        health_status.get("qdrant", False),
-        health_status.get("elasticsearch", False),
-        embedding_healthy,
-        parser_healthy,
-        chunker_healthy
-    ])
-    
-    return {
-        "status": "healthy" if all_healthy else "degraded",
-        "service": "ingestion",
-        "components": {
-            "qdrant": "healthy" if health_status.get("qdrant") else "unhealthy",
-            "elasticsearch": "healthy" if health_status.get("elasticsearch") else "unhealthy",
-            "embeddings": "healthy" if embedding_healthy else "unhealthy",
-            "parsers": "healthy" if parser_healthy else "unhealthy",
-            "chunkers": "healthy" if chunker_healthy else "unhealthy",
-            "transaction_manager": "healthy" if health_status.get("transaction_manager") else "degraded"
-        }
-    }
+async def health_check() -> dict[str, Any]:
+    stores = transaction_manager.health_check()
+    model = embedding_generator.get_model_info()
+    healthy = stores["transaction_manager"] and model["status"] == "loaded"
+    return {"status": "healthy" if healthy else "degraded", "service": "ingestion", "components": {**stores, "embeddings": model["status"]}}
 
 
-@app.post("/ingest", response_model=IngestionResponse)
-async def ingest(request: IngestionRequest):
-    """
-    Main ingestion endpoint - full pipeline: parse → chunk → embed → write to Qdrant+Elasticsearch
-    """
+@app.post("/ingest", response_model=IngestionResponse, status_code=status.HTTP_201_CREATED)
+async def ingest(request: IngestionRequest) -> IngestionResponse:
     try:
-        logger.info(f"Starting ingestion for {request.data_source} from {request.jurisdiction}")
-        
-        errors = []
-        
-        # Step 1: Parse data based on source type
-        if request.data_source == "json":
-            # Use structured JSON parsing
-            parsed_chunks = statute_parser.parse_json(request.data, request.metadata)
-        elif request.data_source == "raw_text":
-            # Use raw text parsing
-            # Expect data to be list of {"text": "..."} objects
-            raw_texts = [item.get("text", "") for item in request.data]
-            parsed_chunks = []
-            for i, text in enumerate(raw_texts):
-                chunks = statute_parser.parse(text, {**request.metadata, "doc_index": i})
-                parsed_chunks.extend(chunks)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported data_source: {request.data_source}")
-        
-        logger.info(f"Parsed {len(parsed_chunks)} chunks")
-        
-        if not parsed_chunks:
-            return IngestionResponse(
-                status="completed",
-                chunks_processed=0,
-                qdrant_points=0,
-                elasticsearch_docs=0,
-                corpus_version=request.metadata.get("version", "1.0"),
-                errors=["No chunks parsed from input data"]
-            )
-        
-        # Step 2: Chunk the parsed data
-        chunked_data = legal_chunker.chunk(parsed_chunks)
-        
-        # Add citation metadata
-        enhanced_chunks = legal_chunker.add_citation_metadata(
-            chunked_data,
-            {
-                **request.metadata,
-                "jurisdiction": request.jurisdiction,
-                "domain": request.domain
-            }
-        )
-        
-        logger.info(f"Chunked into {len(enhanced_chunks)} enhanced chunks")
-        
-        # Step 3: Generate embeddings
-        embedded_chunks = embedding_generator.generate_embeddings(enhanced_chunks)
-        
-        logger.info(f"Generated embeddings for {len(embedded_chunks)} chunks")
-        
-        # Debug: Check first chunk structure
-        if embedded_chunks:
-            first_chunk = embedded_chunks[0]
-            logger.info(f"First chunk keys: {first_chunk.keys()}")
-            logger.info(f"First chunk has 'embedding': {'embedding' in first_chunk}")
-            if 'embedding' in first_chunk:
-                logger.info(f"First chunk embedding length: {len(first_chunk['embedding'])}")
-            else:
-                logger.error(f"First chunk missing 'embedding' key!")
-        
-        # Step 4: Transactional write to Qdrant and Elasticsearch
-        corpus_version = request.metadata.get("version", "1.0")
-        
-        try:
-            qdrant_points, elasticsearch_docs = await transaction_manager.ingest_chunks(
-                chunks=embedded_chunks,
-                corpus_version=corpus_version,
-                jurisdiction=request.jurisdiction,
-                domain=request.domain
-            )
-            
-            logger.info(f"Successfully wrote {qdrant_points} points to Qdrant and {elasticsearch_docs} docs to Elasticsearch")
-            
-            return IngestionResponse(
-                status="completed",
-                chunks_processed=len(embedded_chunks),
-                qdrant_points=qdrant_points,
-                elasticsearch_docs=elasticsearch_docs,
-                corpus_version=corpus_version,
-                errors=errors
-            )
-            
-        except Exception as e:
-            logger.error(f"Transaction failed: {e}")
-            errors.append(f"Transaction failed: {str(e)}")
-            
-            return IngestionResponse(
-                status="failed",
-                chunks_processed=len(embedded_chunks),
-                qdrant_points=0,
-                elasticsearch_docs=0,
-                corpus_version=corpus_version,
-                errors=errors
-            )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Ingestion failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/ingest-single")
-async def ingest_single_text(text: str, metadata: Dict[str, Any]):
-    """
-    Convenience endpoint for ingesting a single text document
-    """
-    request = IngestionRequest(
-        data_source="raw_text",
-        data=[{"text": text}],
-        metadata=metadata
-    )
-    return await ingest(request)
-
-
-@app.get("/corpus/{version}")
-async def get_corpus_info(version: str):
-    """
-    Get information about a specific corpus version
-    """
-    try:
-        info = await transaction_manager.get_corpus_info(version)
-        return info
-    except Exception as e:
-        logger.error(f"Failed to get corpus info: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+        chunks = _normalise(request)
+        version = hashlib.sha256("".join(chunk["metadata"]["version_hash"] for chunk in chunks).encode()).hexdigest()
+        result = transaction_manager.ingest_chunks(chunks, version, request.jurisdiction, request.domain)
+        return IngestionResponse(status="completed", chunks_processed=len(chunks), qdrant_points=result.qdrant_points,
+                                 elasticsearch_docs=result.elasticsearch_docs, corpus_version=version, transaction_id=result.transaction_id)
+    except (ValueError, DualStoreConsistencyError) as error:
+        logger.error("Ingestion refused: %s", error)
+        raise HTTPException(status_code=409, detail="Ingestion was not committed; inspect the operator logs and dual-store alert.") from error
+    except Exception as error:
+        logger.exception("Ingestion failed")
+        raise HTTPException(status_code=500, detail="Ingestion failed without publishing partial results.") from error

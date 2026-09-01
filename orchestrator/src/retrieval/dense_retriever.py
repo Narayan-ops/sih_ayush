@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-@dataclass
 class RetrievalResult:
     """Represents a single retrieval result"""
     chunk_id: str
@@ -76,9 +75,9 @@ class DenseRetriever:
         Returns:
             Collection name with jurisdiction prefix
         """
-        if jurisdiction.lower() == 'india':
+        if jurisdiction.lower() in {'india', 'in'}:
             prefix = 'in_'
-        elif jurisdiction.lower() == 'international':
+        elif jurisdiction.lower() in {'international', 'intl'}:
             prefix = 'intl_'
         else:
             raise ValueError(f"Invalid jurisdiction: {jurisdiction}. Must be 'india' or 'international'")
@@ -117,7 +116,7 @@ class DenseRetriever:
                 collection_name=collection_name,
                 query_vector=query_embedding,
                 limit=top_k,
-                score_threshold=0.4,  # Lowered from 0.7 to 0.4 based on actual BGE scores (~0.45-0.60)
+                score_threshold=score_threshold,
                 with_payload=True
             )
             

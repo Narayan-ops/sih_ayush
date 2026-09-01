@@ -6,6 +6,8 @@ Provides health status and monitoring endpoints
 from fastapi import APIRouter, Request
 import time
 import logging
+import os
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +31,21 @@ async def detailed_health_check(request: Request):
             database_healthy = (await conn.fetchval("SELECT 1")) == 1
     except Exception:
         logger.exception("Database health check failed")
+    orchestrator_healthy = False
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(f"{os.getenv('ORCHESTRATOR_URL', 'http://localhost:8001')}/health")
+            orchestrator_healthy = response.is_success and response.json().get("status") == "healthy"
+    except Exception:
+        logger.warning("Orchestrator health check failed", exc_info=True)
     return {
-        "status": "healthy" if database_healthy else "degraded",
+        "status": "healthy" if database_healthy and orchestrator_healthy else "degraded",
         "service": "api-gateway",
         "timestamp": time.time(),
         "components": {
             "api_gateway": "healthy",
             "database": "healthy" if database_healthy else "unhealthy",
-            "orchestrator": "not_checked",
+            "orchestrator": "healthy" if orchestrator_healthy else "unhealthy",
             "auth": "configured"
         }
     }
@@ -50,8 +59,18 @@ async def readiness_check(request: Request):
             ready = (await conn.fetchval("SELECT 1")) == 1
     except Exception:
         logger.exception("Readiness database check failed")
+    # A gateway must not accept research requests while its only downstream
+    # authority is unhealthy; otherwise users receive opaque 503 failures.
+    orchestrator_ready = False
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(f"{os.getenv('ORCHESTRATOR_URL', 'http://localhost:8001')}/health")
+            orchestrator_ready = response.is_success and response.json().get("status") == "healthy"
+    except Exception:
+        logger.warning("Orchestrator readiness check failed", exc_info=True)
     return {
-        "ready": ready,
+        "ready": ready and orchestrator_ready,
+        "components": {"database": ready, "orchestrator": orchestrator_ready},
         "timestamp": time.time()
     }
 

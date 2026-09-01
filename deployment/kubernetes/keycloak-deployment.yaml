@@ -23,6 +23,11 @@ spec:
           valueFrom:
             secretKeyRef:
               name: keycloak-secret
+              key: admin-username
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secret
               key: admin-password
         - name: KC_DB
           value: "postgres"

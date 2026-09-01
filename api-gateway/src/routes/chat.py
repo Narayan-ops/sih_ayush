@@ -102,9 +102,13 @@ async def chat(request: ChatRequest, http_request: Request, current_user: Option
     else:
         message_for_query = request.message
 
-    orchestrator_response = await orchestrator_client.send_query_request(
-        QueryRequest(query=message_for_query, jurisdiction="in" if request.jurisdiction == "india" else "intl", formulation_type=formulation_class), headers
-    )
+    try:
+        orchestrator_response = await orchestrator_client.send_query_request(
+            QueryRequest(query=message_for_query, jurisdiction="in" if request.jurisdiction == "india" else "intl", formulation_type=formulation_class), headers
+        )
+    except Exception:
+        logger.exception("Orchestrator request failed", extra={"session_id": session_id})
+        raise HTTPException(status_code=503, detail="Grounded research service is unavailable. Check the orchestrator, retrieval stores, and self-hosted model health endpoints.")
     score = orchestrator_response.confidence_score or 0.0
     confidence: Literal["low", "medium", "high"] = "high" if score >= 0.8 else "medium" if score >= 0.5 else "low"
     chunk_ids = sorted({citation.get("chunk_id") for citation in orchestrator_response.citations if citation.get("chunk_id")})

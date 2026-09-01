@@ -13,7 +13,7 @@ services:
       - pg_data:/var/lib/postgresql/data
       - ./data/relational-store/schema.sql:/docker-entrypoint-initdb.d/schema.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d ip_sakti"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10

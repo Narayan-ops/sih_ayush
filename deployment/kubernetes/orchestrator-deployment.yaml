@@ -30,7 +30,7 @@ spec:
               key: url
         - name: LLM_PROVIDER
           value: "self_hosted"
-        - name: VLLM_URL
+        - name: SELF_HOSTED_LLM_URL
           value: "http://vllm-service:8000"
         resources:
           requests:

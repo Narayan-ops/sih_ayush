@@ -32,7 +32,7 @@ class LLMConfig:
         configs = {
             "self_hosted": {
                 "base_url": os.getenv("SELF_HOSTED_LLM_URL", "http://localhost:8000"),
-                "model_name": os.getenv("SELF_HOSTED_MODEL", "llama-3.1-8b"),
+                "model_name": os.getenv("SELF_HOSTED_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
                 "timeout": int(os.getenv("SELF_HOSTED_TIMEOUT", "30")),
                 "max_tokens": int(os.getenv("SELF_HOSTED_MAX_TOKENS", "2048")),
                 "temperature": float(os.getenv("SELF_HOSTED_TEMPERATURE", "0.7")),
@@ -56,7 +56,7 @@ class LLMConfig:
         }
         
         # Remove None values for optional providers
-        for provider, config in configs.items():
+        for provider, config in list(configs.items()):
             if provider != "self_hosted" and not config.get("api_key"):
                 logger.warning(f"API key not configured for {provider}, provider will be unavailable")
                 del configs[provider]

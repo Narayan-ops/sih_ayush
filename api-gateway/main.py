@@ -32,6 +32,15 @@ app = FastAPI()
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Do not leak internal details while making operational failures diagnosable."""
+    logger.exception("Unhandled gateway error on %s", request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "The gateway could not complete the request. Check gateway logs, database migration status, and orchestrator health."},
+    )
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
