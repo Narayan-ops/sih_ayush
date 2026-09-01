@@ -72,7 +72,7 @@ class TransactionManager:
                 "chunk_id": {"type": "keyword"}, "content": {"type": "text"}, "source_id": {"type": "keyword"},
                 "section": {"type": "keyword"}, "clause": {"type": "keyword"}, "version_hash": {"type": "keyword"},
                 "review_status": {"type": "keyword"}, "jurisdiction": {"type": "keyword"}, "domain": {"type": "keyword"},
-                "corpus_version": {"type": "keyword"}, "ingested_at": {"type": "date"}, "metadata": {"type": "object", "enabled": false},
+                "corpus_version": {"type": "keyword"}, "ingested_at": {"type": "date"}, "metadata": {"type": "object", "enabled": False},
             }})
 
     def _existing_qdrant_ids(self, collection: str, ids: list[str]) -> set[str]:
